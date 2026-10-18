@@ -27,4 +27,5 @@ PADD is a tablet web app for drawing feedback to Claude Code sessions. It is bui
 
 - Conventional Commits: `feat(ui): …`, `fix(daemon): …`, `docs: …`, `chore: …`. Scopes: `daemon`,
   `ui`, `mcp`, `cli`.
-- Small, atomic commits after each verified step. Local only: don't push or add remotes unless asked.
+- Small, atomic commits after each verified step. The repo is public on GitHub: push only when asked,
+  and keep personal paths, addresses and tokens out of code, docs and tests.

@@ -2,7 +2,7 @@
 
 Where PADD is and what comes next. Update it when a step lands.
 
-1. ✅ **Ink on one board** (checked in headless Chromium; pen feel on the tablet pending). Pen with pressure, palm rejection, pan and pinch, eraser, undo; strokes
+1. ✅ **Ink on one board.** Pen with pressure, palm rejection, pan and pinch, eraser, undo; strokes
    saved as drawn; LAN with token.
 2. ✅ **Projects and subprojects.** `padd init` installs a repo (`.padd/config.json`); the tablet
    picks project and subproject, creates subprojects, and shows a live filmstrip of every image.
@@ -15,4 +15,4 @@ Where PADD is and what comes next. Update it when a step lands.
    Send), `draw` and `note` in Claude's lilac; text notes on the tablet (the Text tool).
 6. ✅ **Service.** `padd service install`: a systemd user unit that starts with the desktop session.
 
-**Next step:** none planned: use it on tofu and collect what's missing.
+**Next step:** none planned: use it on real projects and collect what's missing.

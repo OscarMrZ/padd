@@ -155,7 +155,7 @@ export async function runMcp(opts: McpOptions): Promise<void> {
         body: JSON.stringify({ session: opts.session, ...body }),
       });
     } catch {
-      throw new Error("PADD isn't running on this computer. The user can start it with: padd serve");
+      throw new Error("PADD isn't running on this computer. The user can start it with: padd service install");
     }
     const data = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok) throw new Error(data.error ?? `padd answered ${res.status}`);
@@ -197,7 +197,7 @@ export async function runMcp(opts: McpOptions): Promise<void> {
           const res = await fetch(`${daemon}/status?session=${encodeURIComponent(opts.session)}`, {
             headers: { Authorization: `Bearer ${opts.token}` },
           }).catch(() => null);
-          if (!res) throw new Error("PADD isn't running on this computer. The user can start it with: padd serve");
+          if (!res) throw new Error("PADD isn't running on this computer. The user can start it with: padd service install");
           return text(JSON.stringify(await res.json(), null, 2));
         }
         default:
