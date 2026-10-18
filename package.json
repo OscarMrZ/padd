@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "description": "Draw feedback for Claude Code sessions from a tablet",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
+  "author": "Óscar Martínez",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/OscarMrZ/padd.git"

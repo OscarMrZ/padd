@@ -111,4 +111,5 @@ padd serve                    # or run it in a terminal (stop the service first)
 
 ## License
 
-[MIT](LICENSE)
+Copyright © 2026 Óscar Martínez. PADD is free software: you can redistribute it and/or modify it
+under the [GNU General Public License](LICENSE), version 3 or (at your option) any later version.
