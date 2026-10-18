@@ -251,6 +251,8 @@ svg {
 
 .tool:hover, .act:hover { background: var(--hull-hi); }
 
+.act[aria-pressed="true"] .enter, .act[aria-pressed="false"] .exit { display: none; }
+
 .tool[aria-pressed="true"] {
   background: var(--amber);
   color: var(--space);

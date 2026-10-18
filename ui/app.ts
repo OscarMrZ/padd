@@ -651,6 +651,7 @@ document.addEventListener("click", (e) => {
   else if (d.size) setSize(Number(d.size));
   else if (d.act === "undo") void view.undo();
   else if (d.act === "fit") view.fit();
+  else if (d.act === "fullscreen") toggleFullscreen();
   else if (d.board) void openBoard(d.board);
   else if (d.add) renderNav(d.add);
   else if (d.cancel !== undefined) renderNav();
@@ -679,6 +680,23 @@ document.addEventListener("keydown", (e) => {
   }
   else if (e.key === "ArrowLeft") step(1); // older
   else if (e.key === "ArrowRight") step(-1); // newer
+});
+
+// Full screen hides the browser's bars. The button shows only where the browser allows it.
+const fullscreenBtn = $<HTMLButtonElement>('[data-act="fullscreen"]');
+fullscreenBtn.hidden = !document.fullscreenEnabled;
+
+function toggleFullscreen(): void {
+  const request = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen({ navigationUI: "hide" });
+  request.catch((err: Error) => toast(`Full screen didn't work: ${err.message}`));
+}
+
+document.addEventListener("fullscreenchange", () => {
+  const on = document.fullscreenElement !== null;
+  fullscreenBtn.setAttribute("aria-pressed", String(on));
+  fullscreenBtn.title = on ? "Leave full screen" : "Full screen";
+  fullscreenBtn.setAttribute("aria-label", fullscreenBtn.title);
+  view.fit(); // the stage just changed size: fill it
 });
 
 window.addEventListener("hashchange", () => {
