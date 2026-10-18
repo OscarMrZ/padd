@@ -18,9 +18,15 @@ export const IMAGE_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-/** A sortable, unique id: time first, so a plain sort is chronological. */
+let lastMs = 0;
+
+/**
+ * A sortable, unique id: time first, so a plain sort is chronological. Ids made in the same
+ * millisecond borrow the next one, so they still sort in creation order.
+ */
 export function newId(): string {
-  return Date.now().toString(36).padStart(9, "0") + randomBytes(3).toString("hex");
+  lastMs = Math.max(Date.now(), lastMs + 1);
+  return lastMs.toString(36).padStart(9, "0") + randomBytes(3).toString("hex");
 }
 
 const ID = /^[0-9a-z]{9,32}$/;

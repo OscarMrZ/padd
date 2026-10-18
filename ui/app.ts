@@ -1,486 +1,374 @@
-// The tablet UI: draw on a board with the pen, pan and zoom with fingers.
-// Every finished stroke is saved at once; nothing here talks to Claude.
+// The tablet UI shell: which project and subproject you're in, the filmstrip of its images,
+// and live updates from padd serve. Drawing itself lives in board.ts.
 
-import { fit, hits, simplify, toImage, widthAt, zoomAt, type View } from "../src/shared/ink.ts";
-import type { Board, BoardInk, Point, Stroke, Tool } from "../src/shared/types.ts";
-
-const COLORS = [
-  { name: "Amber", value: "#f2a65a" },
-  { name: "White", value: "#f2f0f7" },
-  { name: "Rose", value: "#e8707e" },
-  { name: "Ice", value: "#7cc8ee" },
-];
-const HIGHLIGHT_ALPHA = 0.35;
-const HIGHLIGHT_SCALE = 4;
-const ERASER_RADIUS = 14; // screen px
-const PALM_GUARD_MS = 600; // ignore touches this long after the pen was near
+import type { Board, BoardInk, PaddEvent, ProjectSummary, Subproject } from "../src/shared/types.ts";
+import { api, clientId, enc, remember, toast } from "./api.ts";
+import { COLORS, createBoardView, type Mode } from "./board.ts";
 
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!;
-const stage = $<HTMLElement>(".stage");
-const inkCanvas = $<HTMLCanvasElement>("canvas.ink");
-const liveCanvas = $<HTMLCanvasElement>("canvas.live");
-const ink = inkCanvas.getContext("2d")!;
-const live = liveCanvas.getContext("2d")!;
 
-type Mode = Tool | "eraser";
-type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[] };
+const view = createBoardView($<HTMLElement>(".stage"));
 
 const state = {
+  projects: [] as ProjectSummary[],
+  project: null as ProjectSummary | null,
+  sub: null as Subproject | null,
+  /** The subproject's boards, newest first. */
   boards: [] as Board[],
   board: null as Board | null,
-  image: null as HTMLImageElement | null,
-  strokes: [] as Stroke[],
-  view: { x: 0, y: 0, scale: 1 } as View,
-  fitted: false,
-  mode: "pen" as Mode,
-  color: COLORS[0]!.value,
-  size: 4,
-  undo: [] as Undo[],
-  penSeen: 0,
+  seen: new Set<string>(),
+  follow: remember.get("padd.follow") !== "off",
+  /** Bumped on every navigation, so a slow load can't land on top of a newer one. */
+  seq: 0,
 };
 
-// ---------- drawing ----------
+const base = () => `/api/p/${enc(state.project!.id, state.sub!.id)}/boards`;
 
-function resize(): void {
-  const dpr = window.devicePixelRatio || 1;
-  const { width, height } = stage.getBoundingClientRect();
-  for (const c of [inkCanvas, liveCanvas]) {
-    c.width = Math.round(width * dpr);
-    c.height = Math.round(height * dpr);
+// ---------- navigation ----------
+
+async function loadProjects(): Promise<void> {
+  state.projects = await api<ProjectSummary[]>("/api/projects");
+}
+
+/** Opens a subproject (and one of its boards, else the newest). */
+async function go(projectId: string, subId: string, boardId?: string): Promise<void> {
+  const project = state.projects.find((p) => p.id === projectId);
+  const sub = project?.subprojects.find((s) => s.id === subId);
+  if (!project || !sub) {
+    toast(`${projectId}/${subId} isn't there any more`);
+    return openNav();
   }
-  if (!state.fitted) fitView();
-  redraw();
-}
-
-function fitView(): void {
-  if (!state.image) return;
-  const { width, height } = stage.getBoundingClientRect();
-  state.view = fit(state.image.naturalWidth, state.image.naturalHeight, width, height);
-  state.fitted = true;
-}
-
-/** Sets the context so drawing happens in image pixels. */
-function toImageSpace(ctx: CanvasRenderingContext2D): void {
-  const dpr = window.devicePixelRatio || 1;
-  const { x, y, scale } = state.view;
-  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * x, dpr * y);
-}
-
-function clear(ctx: CanvasRenderingContext2D): void {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-}
-
-function redraw(): void {
-  clear(ink);
-  if (!state.image) return;
-  toImageSpace(ink);
-  ink.imageSmoothingQuality = "high";
-  ink.drawImage(state.image, 0, 0);
-  for (const s of state.strokes) drawStroke(ink, s);
-}
-
-function drawStroke(ctx: CanvasRenderingContext2D, s: Stroke): void {
-  const pts = s.points;
-  ctx.save();
-  ctx.strokeStyle = ctx.fillStyle = s.color;
-  ctx.lineCap = ctx.lineJoin = "round";
-  if (s.tool === "highlighter") {
-    // One path, so the overlaps inside a stroke don't darken.
-    ctx.globalAlpha = HIGHLIGHT_ALPHA;
-    ctx.lineWidth = s.size;
-    ctx.beginPath();
-    ctx.moveTo(pts[0]![0], pts[0]![1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]![0], pts[i]![1]);
-    if (pts.length === 1) ctx.lineTo(pts[0]![0] + 0.01, pts[0]![1]);
-    ctx.stroke();
-  } else if (pts.length === 1) {
-    ctx.beginPath();
-    ctx.arc(pts[0]![0], pts[0]![1], widthAt(s.size, pts[0]![2]) / 2, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    // Each piece runs between the midpoints around a point, curving through it,
-    // with the width of that point's pressure. Round caps hide the joins.
-    let [mx, my] = [pts[0]![0], pts[0]![1]];
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i]!;
-      const next = pts[i + 1];
-      const [nx, ny] = next ? [(p[0] + next[0]) / 2, (p[1] + next[1]) / 2] : [p[0], p[1]];
-      ctx.lineWidth = widthAt(s.size, (pts[i - 1]![2] + p[2]) / 2);
-      ctx.beginPath();
-      ctx.moveTo(mx, my);
-      ctx.quadraticCurveTo(p[0], p[1], nx, ny);
-      ctx.stroke();
-      [mx, my] = [nx, ny];
-    }
+  const seq = ++state.seq;
+  const boards = await api<Board[]>(`/api/p/${enc(project.id, sub.id)}/boards`);
+  if (seq !== state.seq) return;
+  Object.assign(state, { project, sub, boards: boards.reverse(), board: null });
+  closeNav();
+  // What is already there when you arrive counts as seen; only arrivals get the dot.
+  state.seen = new Set(boards.map((b) => b.id));
+  remember.set("padd.place", `${project.id}/${sub.id}`);
+  renderPlace();
+  const pick = state.boards.find((b) => b.id === boardId) ?? state.boards[0];
+  if (pick) await openBoard(pick.id);
+  else {
+    view.close();
+    renderStrip();
+    syncHash();
   }
-  ctx.restore();
 }
 
-// ---------- input ----------
-
-let drawing: { id: number; stroke: Stroke } | null = null;
-let erasing: { id: number; erased: Stroke[] } | null = null;
-const touches = new Map<number, { x: number; y: number }>();
-let gesture: { view: View; dist: number; mid: { x: number; y: number } } | null = null;
-let mousePan: { id: number; x: number; y: number } | null = null;
-
-function local(e: { clientX: number; clientY: number }): { x: number; y: number } {
-  const r = stage.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
+async function openBoard(id: string): Promise<void> {
+  const seq = ++state.seq;
+  const data = await api<BoardInk>(`${base()}/${enc(id)}`);
+  const image = new Image();
+  image.src = `${base()}/${enc(id)}/image`;
+  await image.decode();
+  if (seq !== state.seq) return;
+  state.board = data.board;
+  state.seen.add(id);
+  view.open(`${base()}/${enc(id)}`, data, image);
+  renderStrip();
+  syncHash();
 }
 
-function pressure(e: PointerEvent): number {
-  return e.pointerType === "pen" ? e.pressure : 0.5;
+function step(delta: number): void {
+  const i = state.boards.findIndex((b) => b.id === state.board?.id);
+  const next = state.boards[i + delta];
+  if (next) void openBoard(next.id);
 }
 
-/** The S Pen's side button, or a pen's eraser end, erases whatever tool is chosen. */
-function wantsEraser(e: PointerEvent): boolean {
-  return state.mode === "eraser" || (e.pointerType === "pen" && (e.buttons & (2 | 32)) !== 0);
+/** #/<project>/<sub>/<board> keeps your place across reloads. */
+function syncHash(): void {
+  if (!state.project || !state.sub) return;
+  const hash = `#/${enc(state.project.id, state.sub.id)}${state.board ? `/${enc(state.board.id)}` : ""}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
 }
 
-stage.addEventListener("pointerdown", (e) => {
-  if (e.pointerType === "touch") return touchDown(e);
-  if (e.pointerType === "pen") {
-    state.penSeen = performance.now();
-    cancelGesture(); // a palm that landed first must not keep panning
-  }
-  if (e.pointerType === "mouse" && e.button !== 0) {
-    mousePan = { id: e.pointerId, x: e.clientX, y: e.clientY };
-    stage.setPointerCapture(e.pointerId);
-    return;
-  }
-  if (!state.board || drawing || erasing) return;
-  stage.setPointerCapture(e.pointerId);
-  if (wantsEraser(e)) {
-    erasing = { id: e.pointerId, erased: [] };
-    eraseAt(e);
-    return;
-  }
-  const { x, y } = local(e);
-  const [ix, iy] = toImage(state.view, x, y);
-  const highlighter = state.mode === "highlighter";
-  drawing = {
-    id: e.pointerId,
-    stroke: {
-      id: "",
-      author: "me",
-      tool: highlighter ? "highlighter" : "pen",
-      color: state.color,
-      size: (state.size * (highlighter ? HIGHLIGHT_SCALE : 1)) / state.view.scale,
-      points: [[ix, iy, pressure(e)]],
-      t: Date.now(),
-    },
-  };
-  drawLive();
-});
+function parseHash(): [string, string, string | undefined] | null {
+  const [project, sub, board] = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  return project && sub ? [project, sub, board] : null;
+}
 
-stage.addEventListener("pointermove", (e) => {
-  if (e.pointerType === "pen") state.penSeen = performance.now();
-  if (e.pointerType === "touch") return touchMove(e);
-  if (mousePan?.id === e.pointerId) {
-    state.view = { ...state.view, x: state.view.x + e.clientX - mousePan.x, y: state.view.y + e.clientY - mousePan.y };
-    mousePan = { ...mousePan, x: e.clientX, y: e.clientY };
-    return redraw();
-  }
-  if (erasing?.id === e.pointerId) return eraseAt(e);
-  if (drawing?.id !== e.pointerId) return;
-  const pts = drawing.stroke.points;
-  const minStep = 0.75 / state.view.scale;
-  for (const ce of e.getCoalescedEvents?.() ?? [e]) {
-    const { x, y } = local(ce);
-    const [ix, iy] = toImage(state.view, x, y);
-    const last = pts[pts.length - 1]!;
-    if (Math.hypot(ix - last[0], iy - last[1]) < minStep) continue;
-    pts.push([ix, iy, pressure(ce)]);
-  }
-  drawLive();
-});
+// ---------- rendering ----------
 
-for (const type of ["pointerup", "pointercancel"] as const) {
-  stage.addEventListener(type, (e) => {
-    if (e.pointerType === "touch") return touchUp(e);
-    if (mousePan?.id === e.pointerId) mousePan = null;
-    if (erasing?.id === e.pointerId) return finishErase();
-    if (drawing?.id === e.pointerId) return type === "pointerup" ? finishStroke() : dropStroke();
+function renderPlace(): void {
+  $(".place .project").textContent = state.project?.name ?? "Choose a project";
+  $(".place .sub").textContent = state.sub?.title ?? "";
+  document.title = state.sub ? `${state.sub.title} in ${state.project!.name} (PADD)` : "PADD";
+}
+
+function renderStrip(): void {
+  const strip = $<HTMLElement>(".strip");
+  const empty = $<HTMLElement>(".empty");
+  strip.hidden = state.boards.length === 0;
+  empty.hidden = state.boards.length > 0;
+  if (state.sub && state.boards.length === 0) {
+    empty.textContent = `No images in ${state.sub.title} yet. They appear here as soon as Claude shows them.`;
+  }
+  const i = state.boards.findIndex((b) => b.id === state.board?.id);
+  $(".board-title").textContent = state.board?.title ?? "";
+  $(".count").textContent = i >= 0 ? `${state.boards.length - i} of ${state.boards.length}` : `${state.boards.length} images`;
+
+  // Reuse thumbnails already on screen: images arrive often and the strip must not flicker.
+  const thumbs = $<HTMLElement>(".thumbs");
+  const existing = new Map([...thumbs.children].map((el) => [(el as HTMLElement).dataset.board!, el as HTMLElement]));
+  const wanted = state.boards.map((b) => existing.get(b.id) ?? makeThumb(b));
+  for (const el of existing.values()) if (!wanted.includes(el)) el.remove();
+  wanted.forEach((el, n) => {
+    if (thumbs.children[n] !== el) thumbs.insertBefore(el, thumbs.children[n] ?? null);
+    const id = el.dataset.board!;
+    el.setAttribute("aria-selected", String(id === state.board?.id));
+    el.classList.toggle("unseen", !state.seen.has(id));
   });
+  thumbs.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
-stage.addEventListener("contextmenu", (e) => e.preventDefault());
-
-stage.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    const { x, y } = local(e);
-    if (e.ctrlKey || !e.shiftKey) state.view = zoomAt(state.view, x, y, Math.exp(-e.deltaY * 0.0015));
-    else state.view = { ...state.view, x: state.view.x - e.deltaY, y: state.view.y };
-    redraw();
-  },
-  { passive: false },
-);
-
-function drawLive(): void {
-  clear(live);
-  if (!drawing) return;
-  toImageSpace(live);
-  drawStroke(live, drawing.stroke);
+function makeThumb(b: Board): HTMLElement {
+  const btn = document.createElement("button");
+  btn.className = "thumb";
+  btn.dataset.board = b.id;
+  btn.setAttribute("role", "option");
+  btn.title = b.title;
+  const img = document.createElement("img");
+  img.alt = b.title;
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.src = `${base()}/${enc(b.id)}/thumb`;
+  btn.append(img);
+  return btn;
 }
 
-function dropStroke(): void {
-  drawing = null;
-  clear(live);
+// ---------- navigator ----------
+
+const nav = $<HTMLElement>(".nav");
+const placeBtn = $<HTMLButtonElement>(".place");
+
+function openNav(adding?: string): void {
+  renderNav(adding);
+  nav.hidden = false;
+  placeBtn.setAttribute("aria-expanded", "true");
 }
 
-async function finishStroke(): Promise<void> {
-  const board = state.board!;
-  const stroke = drawing!.stroke;
-  drawing = null;
-  stroke.points = simplify(stroke.points, 0.35 / state.view.scale);
-  state.strokes.push(stroke);
-  clear(live);
-  redraw();
-  try {
-    const { id } = await api<{ id: string }>(`/api/boards/${board.id}/strokes`, stroke);
-    stroke.id = id;
-    state.undo.push({ kind: "add", id });
-  } catch (err) {
-    state.strokes = state.strokes.filter((s) => s !== stroke);
-    redraw();
-    toast(`Stroke not saved: ${(err as Error).message}`);
-  }
+function closeNav(): void {
+  nav.hidden = true;
+  placeBtn.setAttribute("aria-expanded", "false");
 }
 
-function eraseAt(e: PointerEvent): void {
-  const { x, y } = local(e);
-  const [ix, iy] = toImage(state.view, x, y);
-  const r = ERASER_RADIUS / state.view.scale;
-  const gone = state.strokes.filter((s) => s.id && hits(s, ix, iy, r));
-  if (gone.length === 0) return;
-  erasing!.erased.push(...gone);
-  state.strokes = state.strokes.filter((s) => !gone.includes(s));
-  redraw();
-}
-
-async function finishErase(): Promise<void> {
-  const { erased } = erasing!;
-  erasing = null;
-  if (erased.length === 0) return;
-  try {
-    await api(`/api/boards/${state.board!.id}/erase`, { ids: erased.map((s) => s.id) });
-    state.undo.push({ kind: "erase", strokes: erased });
-  } catch (err) {
-    state.strokes.push(...erased);
-    redraw();
-    toast(`Not erased: ${(err as Error).message}`);
-  }
-}
-
-async function undo(): Promise<void> {
-  const step = state.undo.pop();
-  if (!step || !state.board) return;
-  const board = state.board.id;
-  try {
-    if (step.kind === "add") {
-      await api(`/api/boards/${board}/erase`, { ids: [step.id] });
-      state.strokes = state.strokes.filter((s) => s.id !== step.id);
-    } else {
-      // Bring erased strokes back as new strokes.
-      for (const s of step.strokes) {
-        const { id } = await api<{ id: string }>(`/api/boards/${board}/strokes`, s);
-        state.strokes.push({ ...s, id });
-      }
-    }
-    redraw();
-  } catch (err) {
-    toast(`Undo failed: ${(err as Error).message}`);
-  }
-}
-
-// Touch: one finger pans, two pinch. Touches near a pen are palms and are ignored.
-
-function touchDown(e: PointerEvent): void {
-  if (drawing || erasing || performance.now() - state.penSeen < PALM_GUARD_MS) return;
-  stage.setPointerCapture(e.pointerId);
-  touches.set(e.pointerId, local(e));
-  startGesture();
-}
-
-function touchMove(e: PointerEvent): void {
-  if (!touches.has(e.pointerId)) return;
-  if (performance.now() - state.penSeen < PALM_GUARD_MS) return cancelGesture();
-  touches.set(e.pointerId, local(e));
-  if (!gesture) return;
-  const { dist, mid } = measure();
-  const g = gesture;
-  const k = g.dist > 0 && dist > 0 ? dist / g.dist : 1;
-  // Zoom about the gesture's start midpoint, then follow the midpoint as it moves.
-  const zoomed = zoomAt(g.view, g.mid.x, g.mid.y, k);
-  state.view = { ...zoomed, x: zoomed.x + mid.x - g.mid.x, y: zoomed.y + mid.y - g.mid.y };
-  redraw();
-}
-
-function touchUp(e: PointerEvent): void {
-  if (!touches.delete(e.pointerId)) return;
-  startGesture();
-}
-
-function startGesture(): void {
-  if (touches.size === 0 || touches.size > 2) {
-    gesture = null;
+function renderNav(adding?: string): void {
+  if (state.projects.length === 0) {
+    nav.replaceChildren(
+      el("p", { class: "none" }, "No projects yet. Run padd init in a repo on your computer, then open this menu again."),
+    );
     return;
   }
-  const { dist, mid } = measure();
-  gesture = { view: state.view, dist, mid };
+  nav.replaceChildren(
+    ...state.projects.map((p) => {
+      const section = el("section", { class: "project" });
+      section.append(el("h2", {}, p.name), el("p", { class: "path" }, p.path));
+      if (p.subprojects.length === 0) section.append(el("p", { class: "none" }, "No subprojects yet."));
+      const list = el("ul", { class: "subs" });
+      for (const s of p.subprojects) {
+        const n = p.boards[s.id] ?? 0;
+        const b = el("button", { "data-project": p.id, "data-sub": s.id });
+        b.setAttribute("aria-current", String(p.id === state.project?.id && s.id === state.sub?.id));
+        b.append(el("span", { class: "title" }, s.title), el("span", { class: "n" }, n === 1 ? "1 image" : `${n} images`));
+        if (s.brief) b.append(el("span", { class: "brief" }, s.brief));
+        list.append(el("li", {}, b));
+      }
+      section.append(list);
+      if (adding === p.id) section.append(subprojectForm(p));
+      else section.append(el("button", { class: "add", "data-add": p.id }, "New subproject"));
+      return section;
+    }),
+  );
 }
 
-function cancelGesture(): void {
-  touches.clear();
-  gesture = null;
+function subprojectForm(p: ProjectSummary): HTMLFormElement {
+  const form = el("form") as HTMLFormElement;
+  const name = el("input", { name: "title", required: "", maxlength: "60", autocomplete: "off" }) as HTMLInputElement;
+  const brief = el("textarea", { name: "brief", maxlength: "4000" }) as HTMLTextAreaElement;
+  const error = el("p", { class: "error", role: "alert" });
+  error.hidden = true;
+  form.append(
+    el("label", {}, "Name", name),
+    el("label", {}, "Brief: what this work is about", brief),
+    error,
+    el("div", { class: "actions" }, el("button", { type: "button", class: "ghost", "data-cancel": "" }, "Cancel"), el("button", { class: "primary" }, "Create subproject")),
+  );
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const sub = await api<Subproject>(`/api/p/${enc(p.id)}/subprojects`, { title: name.value, brief: brief.value });
+      await loadProjects();
+      closeNav();
+      await go(p.id, sub.id);
+    } catch (err) {
+      error.textContent = (err as Error).message;
+      error.hidden = false;
+    }
+  });
+  queueMicrotask(() => name.focus());
+  return form;
 }
 
-function measure(): { dist: number; mid: { x: number; y: number } } {
-  const [a, b] = [...touches.values()];
-  if (!b) return { dist: 0, mid: { ...a! } };
-  return { dist: Math.hypot(b.x - a!.x, b.y - a!.y), mid: { x: (a!.x + b.x) / 2, y: (a!.y + b.y) / 2 } };
+function el(tag: string, attrs: Record<string, string> = {}, ...children: (Node | string)[]): HTMLElement {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  node.append(...children);
+  return node;
 }
 
-// ---------- toolbar ----------
+// ---------- live updates ----------
+
+function listen(): void {
+  const source = new EventSource("/api/events");
+  let dropped = false;
+  source.onopen = () => {
+    setStatus("Connected", "live");
+    // Catch up on whatever happened while the stream was down.
+    if (dropped) void resync();
+    dropped = false;
+  };
+  source.onerror = () => {
+    dropped = true;
+    setStatus("Reconnecting", "error");
+  };
+  source.onmessage = (m) => onEvent(JSON.parse(m.data as string) as PaddEvent);
+}
+
+function onEvent(e: PaddEvent): void {
+  if (e.type === "subproject") {
+    const p = state.projects.find((x) => x.id === e.project);
+    if (p && !p.subprojects.some((s) => s.id === e.subproject.id)) p.subprojects.push(e.subproject);
+    if (!nav.hidden && !nav.querySelector("form")) renderNav();
+    return;
+  }
+  const here = e.project === state.project?.id && e.sub === state.sub?.id;
+  if (e.type === "board") {
+    const p = state.projects.find((x) => x.id === e.project);
+    if (p) p.boards[e.sub] = (p.boards[e.sub] ?? 0) + 1;
+    if (!here || state.boards.some((b) => b.id === e.board.id)) return;
+    state.boards.unshift(e.board);
+    renderStrip();
+    $(`.thumb[data-board="${e.board.id}"]`)?.classList.add("arrived");
+    if (state.follow && !view.busy()) void openBoard(e.board.id);
+    return;
+  }
+  if (!here || e.board !== state.board?.id || e.origin === clientId) return;
+  if (e.type === "stroke") view.remoteStroke(e.stroke);
+  else view.remoteErase(e.ids);
+}
+
+async function resync(): Promise<void> {
+  await loadProjects();
+  if (state.project && state.sub) await go(state.project.id, state.sub.id, state.board?.id);
+}
+
+function setStatus(text: string, s: "live" | "error"): void {
+  const status = $<HTMLElement>(".status");
+  status.textContent = text;
+  status.dataset.state = s;
+}
+
+// ---------- controls ----------
 
 function setMode(mode: Mode): void {
-  state.mode = mode;
-  stage.dataset.tool = mode;
+  view.setMode(mode);
   for (const b of document.querySelectorAll<HTMLButtonElement>(".tool")) {
     b.setAttribute("aria-pressed", String(b.dataset.tool === mode));
   }
 }
 
 function setColor(color: string): void {
-  state.color = color;
+  view.setColor(color);
   for (const b of document.querySelectorAll<HTMLButtonElement>(".swatch")) {
     b.setAttribute("aria-checked", String(b.dataset.color === color));
   }
-  if (state.mode === "eraser") setMode("pen");
+  if ($(".stage").getAttribute("data-tool") === "eraser") setMode("pen");
 }
 
 function setSize(size: number): void {
-  state.size = size;
+  view.setSize(size);
   for (const b of document.querySelectorAll<HTMLButtonElement>(".size")) {
     b.setAttribute("aria-checked", String(Number(b.dataset.size) === size));
   }
 }
 
-const swatches = $<HTMLElement>(".swatches");
 for (const c of COLORS) {
-  const b = document.createElement("button");
-  b.className = "swatch";
-  b.dataset.color = c.value;
+  const b = el("button", { class: "swatch", role: "radio", "aria-label": c.name, "data-color": c.value });
   b.style.setProperty("--c", c.value);
-  b.setAttribute("role", "radio");
-  b.setAttribute("aria-label", c.name);
-  swatches.append(b);
+  $(".swatches").append(b);
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>(".size")) b.setAttribute("role", "radio");
 
 document.addEventListener("click", (e) => {
-  const b = (e.target as Element).closest<HTMLButtonElement>("button");
+  const target = e.target as Element;
+  if (!nav.hidden && !nav.contains(target) && !placeBtn.contains(target)) closeNav();
+  const b = target.closest<HTMLButtonElement>("button");
   if (!b) return;
-  if (b.dataset.tool) setMode(b.dataset.tool as Mode);
-  else if (b.dataset.color) setColor(b.dataset.color);
-  else if (b.dataset.size) setSize(Number(b.dataset.size));
-  else if (b.dataset.act === "undo") void undo();
-  else if (b.dataset.act === "fit") {
-    fitView();
-    redraw();
-  } else if (b.dataset.board) void openBoard(b.dataset.board);
+  const d = b.dataset;
+  if (b === placeBtn) return nav.hidden ? openNav() : closeNav();
+  if (d.tool) setMode(d.tool as Mode);
+  else if (d.color) setColor(d.color);
+  else if (d.size) setSize(Number(d.size));
+  else if (d.act === "undo") void view.undo();
+  else if (d.act === "fit") view.fit();
+  else if (d.board) void openBoard(d.board);
+  else if (d.add) renderNav(d.add);
+  else if (d.cancel !== undefined) renderNav();
+  else if (d.project && d.sub) {
+    closeNav();
+    void go(d.project, d.sub);
+  }
+});
+
+$<HTMLInputElement>(".follow input").checked = state.follow;
+$<HTMLInputElement>(".follow input").addEventListener("change", (e) => {
+  state.follow = (e.target as HTMLInputElement).checked;
+  remember.set("padd.follow", state.follow ? "on" : "off");
 });
 
 document.addEventListener("keydown", (e) => {
+  if ((e.target as Element).closest("input, textarea")) return;
   if ((e.ctrlKey || e.metaKey) && e.key === "z") {
     e.preventDefault();
-    void undo();
+    void view.undo();
+  } else if (e.key === "Escape") closeNav();
+  else if (e.key === "ArrowLeft") step(1); // older
+  else if (e.key === "ArrowRight") step(-1); // newer
+});
+
+window.addEventListener("hashchange", () => {
+  const h = parseHash();
+  if (h && (h[0] !== state.project?.id || h[1] !== state.sub?.id || (h[2] && h[2] !== state.board?.id))) {
+    void go(...h);
   }
 });
 
-// ---------- boards ----------
-
-function renderBoards(): void {
-  const nav = $<HTMLElement>(".boards");
-  nav.replaceChildren(
-    ...state.boards.map((b) => {
-      const btn = document.createElement("button");
-      btn.dataset.board = b.id;
-      btn.textContent = b.title;
-      btn.setAttribute("aria-current", String(b.id === state.board?.id));
-      return btn;
-    }),
-  );
-}
-
-async function openBoard(id: string): Promise<void> {
-  const { board, strokes } = await api<BoardInk>(`/api/boards/${id}`);
-  const image = new Image();
-  image.src = `/api/boards/${id}/image`;
-  await image.decode();
-  Object.assign(state, { board, strokes, image, fitted: false, undo: [] });
-  try {
-    localStorage.setItem("padd.board", id);
-  } catch {
-    // storage may be off; the latest board opens instead
-  }
-  renderBoards();
-  resize();
-}
-
-async function api<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, body === undefined ? {} : {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
-  return data as T;
-}
-
-let toastTimer = 0;
-function toast(text: string): void {
-  const el = $<HTMLElement>(".toast");
-  el.textContent = text;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (el.hidden = true), 5000);
-}
-
-function setStatus(text: string, s: "live" | "error" | "idle"): void {
-  const el = $<HTMLElement>(".status");
-  el.textContent = text;
-  el.dataset.state = s;
-}
-
 async function start(): Promise<void> {
   setMode("pen");
-  setColor(state.color);
-  setSize(state.size);
-  new ResizeObserver(resize).observe(stage);
+  setColor(COLORS[0]!.value);
+  setSize(4);
   try {
-    state.boards = await api<Board[]>("/api/boards");
-    setStatus("Connected", "live");
+    await loadProjects();
   } catch (err) {
     setStatus("Offline", "error");
     toast(`Can't reach padd: ${(err as Error).message}`);
     return;
   }
-  $<HTMLElement>(".empty").hidden = state.boards.length > 0;
-  let saved: string | null = null;
-  try {
-    saved = localStorage.getItem("padd.board");
-  } catch {
-    // ignore
+  listen();
+  const [project, sub, board] = parseHash() ?? (remember.get("padd.place")?.split("/") ?? []);
+  if (project && sub && state.projects.some((p) => p.id === project && p.subprojects.some((s) => s.id === sub))) {
+    await go(project, sub, board);
+    return;
   }
-  const pick = state.boards.find((b) => b.id === saved) ?? state.boards.at(-1);
-  if (pick) await openBoard(pick.id);
-  else renderBoards();
+  // Nowhere to go yet: say so and offer the navigator.
+  const empty = $<HTMLElement>(".empty");
+  empty.hidden = false;
+  empty.textContent =
+    state.projects.length === 0
+      ? "No projects yet. Run padd init in a repo on your computer to add it."
+      : "Choose a subproject to start.";
+  openNav();
 }
 
 void start();

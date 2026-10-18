@@ -12,12 +12,19 @@ Runs on your computer and serves the tablet over the LAN. Status and next steps:
 Needs Node ≥ 26.
 
 ```sh
-npm install
-npm run build                              # compile the tablet UI
-node src/cli.ts serve --board some.png     # add a board and serve on :8788
-node src/cli.ts link                       # print the tablet links (they carry the access token)
-npm test && npm run check                  # tests, types
+npm install && npm run build      # dependencies, then compile the tablet UI
+node src/cli.ts serve             # serve on :8788 (leave it running)
+node src/cli.ts link              # print the tablet links (they carry the access token)
+
+cd ~/Projects/tofu                # in any repo:
+node ~/Projects/padd/src/cli.ts init                        # make it a padd project
+node ~/Projects/padd/src/cli.ts board mood renders/*.png    # show images in subproject "mood"
+
+npm test && npm run check         # tests, types
 ```
+
+`npm link` puts `padd` on your PATH instead of `node …/src/cli.ts`. Subprojects are created on the
+tablet (the project name in the top bar).
 
 If the tablet can't connect, open the port to your LAN (ufw example):
 `sudo ufw allow from 192.168.1.0/24 to any port 8788 proto tcp comment padd`.

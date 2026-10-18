@@ -48,8 +48,9 @@ wrong, say so and propose a new entry instead of quietly working around it.
   web app plus MCP server).
 
 ## D-005 · Config committed in the repo, data local · 2026-10-18
-- **Decision:** a repo gets `.padd/config.json` and a `padd` entry in `.mcp.json`, both committed;
-  boards, strokes, snapshots and session ids live in `.padd/data/` (gitignored).
+- **Decision:** a repo gets `.padd/config.json`, `.padd/.gitignore` and a `padd` entry in
+  `.mcp.json`, all committed; boards, strokes, snapshots and session ids live in `.padd/data/`,
+  which `.padd/.gitignore` keeps out of git (the repo's own `.gitignore` is untouched).
 - **Why:** subprojects are part of the project; images and session ids are generated and machine-local.
 - **Rejected:** committing everything (binaries pile up in git).
 

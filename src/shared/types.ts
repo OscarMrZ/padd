@@ -33,3 +33,43 @@ export interface BoardInk {
   board: Board;
   strokes: Stroke[];
 }
+
+/** A line of work inside a project, e.g. "mood" in tofu. */
+export interface Subproject {
+  id: string;
+  title: string;
+  /** What the work is about; a new session starts from it. */
+  brief: string;
+}
+
+/** The committed `.padd/config.json` of a repo. */
+export interface ProjectConfig {
+  name: string;
+  subprojects: Subproject[];
+}
+
+export interface ProjectInfo extends ProjectConfig {
+  id: string;
+  path: string;
+}
+
+/** A project as the tablet lists it: config plus how many boards each subproject holds. */
+export interface ProjectSummary extends ProjectInfo {
+  boards: Record<string, number>;
+}
+
+/** Where an event happened. */
+export interface Place {
+  project: string;
+  sub: string;
+}
+
+/**
+ * Live changes, streamed to every open tablet view over /api/events.
+ * `origin` is the client that caused it, so that client can skip its own echo.
+ */
+export type PaddEvent =
+  | ({ type: "board"; board: Board } & Place)
+  | ({ type: "stroke"; board: string; stroke: Stroke; origin?: string } & Place)
+  | ({ type: "erase"; board: string; ids: string[]; origin?: string } & Place)
+  | { type: "subproject"; project: string; subproject: Subproject };

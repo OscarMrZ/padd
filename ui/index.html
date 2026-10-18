@@ -17,7 +17,11 @@
 
     <header class="bar">
       <span class="mark">PADD</span>
-      <nav class="boards" aria-label="Boards"></nav>
+      <button class="place" aria-haspopup="dialog" aria-expanded="false" aria-controls="nav">
+        <span class="project">Choose a project</span>
+        <span class="sub"></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
       <span class="status" role="status"></span>
     </header>
 
@@ -52,12 +56,28 @@
       </div>
     </aside>
 
-    <main class="stage">
-      <canvas class="ink"></canvas>
-      <canvas class="live"></canvas>
-      <p class="empty" hidden>No boards yet. Images Claude shows you will appear here.</p>
+    <main class="work">
+      <div class="stage">
+        <canvas class="ink"></canvas>
+        <canvas class="live"></canvas>
+        <p class="empty" hidden></p>
+      </div>
+
+      <section class="strip" aria-label="Images" hidden>
+        <div class="strip-info">
+          <span class="board-title"></span>
+          <span class="count"></span>
+          <label class="follow">
+            <input type="checkbox" checked>
+            <span>Jump to new</span>
+          </label>
+        </div>
+        <div class="thumbs" role="listbox" aria-label="Images, newest first"></div>
+      </section>
     </main>
   </div>
+
+  <div class="nav" id="nav" role="dialog" aria-label="Projects" hidden></div>
   <div class="toast" role="alert" hidden></div>
 </body>
 </html>
