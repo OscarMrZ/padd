@@ -1,10 +1,12 @@
 // Starts a subproject's Claude session from the tablet. The session runs `padd claude <sub>` in a
 // detached tmux session, headless: nothing opens on the computer. padd presses Enter on Claude
 // Code's development-channel warning (L-001). To talk to it directly, `padd attach <sub>` in any
-// terminal, or "Show its window" on the tablet (a Ghostty window attached to it).
+// terminal, or "Show its window" on the tablet (a terminal window attached to it).
 // The folder-trust prompt is never answered for the user: the tablet says to confirm it there.
 
 import { execFile, spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Place } from "../shared/types.ts";
 
@@ -45,10 +47,35 @@ export function tmuxName(place: Place): string {
 /** Prefix that runs a command in its own transient systemd scope, outside padd's cgroup. */
 export const SCOPE = ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--"];
 
-/** Opens Ghostty in its own scope and session, so it outlives padd (L-002, L-007). */
-export function ghostty(title: string, argv: string[]): void {
-  const [cmd, ...args] = [...SCOPE, "ghostty", `--title=${title}`, "-e", ...argv];
+/**
+ * The command that opens a terminal window running `argv`: Ghostty by default, or PADD_TERMINAL,
+ * a command the argv is appended to (e.g. "kitty", "alacritty -e", "gnome-terminal --").
+ */
+export function terminalCommand(env: NodeJS.ProcessEnv, title: string, argv: string[]): string[] {
+  const custom = env.PADD_TERMINAL?.trim().split(/\s+/).filter(Boolean) ?? [];
+  const prefix = custom.length > 0 ? custom : ["ghostty", `--title=${title}`, "-e"];
+  if (!onPath(prefix[0]!, env.PATH ?? "")) {
+    throw new Error(`can't open a window: ${prefix[0]} isn't installed. Set PADD_TERMINAL to your terminal, or run padd attach`);
+  }
+  return [...prefix, ...argv];
+}
+
+/** Opens a terminal window in its own scope and session, so it outlives padd (L-002, L-007). */
+export function openTerminal(title: string, argv: string[]): void {
+  const [cmd, ...args] = [...SCOPE, ...terminalCommand(process.env, title, argv)];
   spawn(cmd!, args, { detached: true, stdio: "ignore" }).unref();
+}
+
+function onPath(cmd: string, path: string): boolean {
+  const candidates = cmd.includes("/") ? [cmd] : path.split(":").filter(Boolean).map((dir) => join(dir, cmd));
+  return candidates.some((file) => {
+    try {
+      accessSync(file, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 export class Launcher {

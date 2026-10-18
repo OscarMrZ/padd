@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { loadToken } from "./daemon/auth.ts";
 import { findRepo, initRepo, installMcp, PADD_DIR, Registry } from "./daemon/registry.ts";
-import { ghostty, Launcher, SOCKET, tmuxName } from "./daemon/launcher.ts";
+import { Launcher, openTerminal, SOCKET, tmuxName } from "./daemon/launcher.ts";
 import { createPaddServer } from "./daemon/server.ts";
 import { Watcher } from "./daemon/watch.ts";
 import { runMcp, sessionFromEnv } from "./mcp/server.ts";
@@ -65,7 +65,7 @@ async function serve(argv: string[]): Promise<void> {
     launch: {
       socket: SOCKET,
       command: (place) => [process.execPath, join(ROOT, "src", "cli.ts"), "claude", place.sub],
-      terminal: ghostty,
+      terminal: openTerminal,
       scope: true,
     },
   });
@@ -332,7 +332,7 @@ async function board(argv: string[]): Promise<void> {
         body: JSON.stringify({ path: resolve(image), title: images.length === 1 ? values.title : undefined }),
       });
     } catch {
-      throw new Error(`padd isn't running on port ${values.port}; start it with padd serve`);
+      throw new Error(`padd isn't running on port ${values.port}; start it with padd service install`);
     }
     const data = (await res.json()) as { title?: string; error?: string };
     if (!res.ok) throw new Error(`${image}: ${data.error ?? res.status}`);

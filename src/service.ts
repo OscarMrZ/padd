@@ -21,7 +21,7 @@ export interface UnitOptions {
 
 /**
  * The unit file. It hangs off graphical-session.target rather than default.target so it starts
- * after the compositor has exported WAYLAND_DISPLAY: padd opens Ghostty windows for sessions.
+ * after the compositor has exported WAYLAND_DISPLAY: padd opens terminal windows for sessions.
  */
 export function unit(o: UnitOptions): string {
   return `[Unit]

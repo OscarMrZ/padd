@@ -173,7 +173,10 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
     }
     if (boardId === "window") {
       if (!state.running) throw new Conflict("this session isn't running in a PADD window");
-      return send(res, 200, { result: (await launcher.show(place)) ? "opened" : "already open" });
+      const opened = await launcher.show(place).catch((e: Error) => {
+        throw new Conflict(e.message); // e.g. no terminal to open
+      });
+      return send(res, 200, { result: opened ? "opened" : "already open" });
     }
   }
 

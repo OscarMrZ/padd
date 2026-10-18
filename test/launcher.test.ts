@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { Launcher, tmuxName } from "../src/daemon/launcher.ts";
+import { Launcher, terminalCommand, tmuxName } from "../src/daemon/launcher.ts";
 import type { Place } from "../src/shared/types.ts";
 
 const SOCKET = `padd-test-${process.pid}`;
@@ -36,6 +36,19 @@ async function fakeClaude(trust: boolean): Promise<string> {
   ].join("\n"));
   return script;
 }
+
+test("the window opens in Ghostty, or the terminal PADD_TERMINAL names", async () => {
+  const bin = await mkdtemp(join(tmpdir(), "padd-bin-"));
+  for (const name of ["ghostty", "kitty"]) {
+    await writeFile(join(bin, name), "");
+    await chmod(join(bin, name), 0o755);
+  }
+  const attach = ["tmux", "attach"];
+  assert.deepEqual(terminalCommand({ PATH: bin }, "padd: a/b", attach), ["ghostty", "--title=padd: a/b", "-e", "tmux", "attach"]);
+  assert.deepEqual(terminalCommand({ PATH: bin, PADD_TERMINAL: " kitty  --single-instance " }, "t", attach), ["kitty", "--single-instance", "tmux", "attach"]);
+  assert.throws(() => terminalCommand({ PATH: bin, PADD_TERMINAL: "alacritty -e" }, "t", attach), /alacritty isn't installed.*padd attach/);
+  assert.throws(() => terminalCommand({ PATH: "" }, "t", attach), /ghostty isn't installed/);
+});
 
 test("tmux names are safe for any place", () => {
   assert.equal(tmuxName({ project: "tofu", sub: "mood" }), "padd_tofu_mood");
