@@ -30,12 +30,34 @@ export interface Board {
   hash?: string;
   /** Where the image came from on this machine. */
   source?: string;
+  /** Image size in pixels, as displayed (camera rotation applied). */
+  w?: number;
+  h?: number;
+}
+
+/** A text note pinned to a point of a board's image (pixels). */
+export interface Note {
+  id: string;
+  author: Author;
+  x: number;
+  y: number;
+  text: string;
+  t: number;
+}
+
+/** A part of an image, as fractions of its width and height (0 to 1). */
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 /** A board with its current ink, as the UI loads it. */
 export interface BoardInk {
   board: Board;
   strokes: Stroke[];
+  notes: Note[];
 }
 
 /** A line of work inside a project, e.g. "mood" in tofu. */
@@ -60,6 +82,11 @@ export interface Message {
   snapshot?: string;
   /** For a Send: whether a Claude session has received it yet. */
   delivered?: boolean;
+  /** Claude's question about a part of the board. */
+  question?: boolean;
+  region?: Region;
+  /** For a Send: the question it answers. */
+  answering?: string;
 }
 
 /** Whether a Claude session is connected for a subproject right now. */
@@ -105,6 +132,7 @@ export type PaddEvent =
   | ({ type: "board"; board: Board } & Place)
   | ({ type: "stroke"; board: string; stroke: Stroke; origin?: string } & Place)
   | ({ type: "erase"; board: string; ids: string[]; origin?: string } & Place)
+  | ({ type: "note"; board: string; note: Note; origin?: string } & Place)
   | { type: "subproject"; project: string; subproject: Subproject }
   | ({ type: "message"; message: Message } & Place)
   | ({ type: "session"; state: SessionState } & Place)

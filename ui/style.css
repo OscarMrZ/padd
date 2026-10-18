@@ -318,6 +318,73 @@ svg {
 }
 
 .stage[data-tool="eraser"] { cursor: cell; }
+.stage[data-tool="text"] { cursor: text; }
+
+/* Notes: labels pinned to a point of the image, readable at any zoom. */
+.notes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+
+.note {
+  position: absolute;
+  max-width: 260px;
+  padding: 6px 10px 7px 12px;
+  border-radius: 2px 6px 6px 6px;
+  background: rgb(20 26 46 / 0.9);
+  border-left: 3px solid var(--author);
+  color: var(--text);
+  font: 500 15px/1.35 var(--body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: -4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--author);
+}
+
+.note.me { --author: var(--amber); }
+.note.claude { --author: var(--lilac); }
+
+.note-editor {
+  position: absolute;
+  z-index: 2;
+  width: 240px;
+  min-height: 64px;
+  padding: 8px 10px;
+  border: 2px solid var(--amber);
+  border-radius: 2px 6px 6px 6px;
+  background: rgb(20 26 46 / 0.95);
+  color: var(--text);
+  font: 500 15px/1.35 var(--body);
+  resize: none;
+}
+
+.note-editor:focus { outline: none; }
+
+/* Claude's question about a part of the image. */
+.question {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(460px, calc(100% - 24px));
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border-left: 3px solid var(--lilac);
+  background: #1b2340;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+}
+
+.question p { margin: 0; font-size: 16px; }
+.question[data-at="bottom"] { top: auto; bottom: 12px; }
 .stage[data-tool="pen"], .stage[data-tool="highlighter"] { cursor: crosshair; }
 
 .input-debug {
@@ -722,6 +789,16 @@ svg {
 
 .msg.me { align-self: flex-end; border-right: 3px solid var(--amber); }
 .msg.claude { align-self: flex-start; border-left: 3px solid var(--lilac); }
+
+.msg .kind, .question .kind {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--lilac);
+  font: 400 14px/1.2 var(--display);
+  letter-spacing: 0.03em;
+}
+
+.msg.me .kind { color: var(--amber); }
 
 .msg .meta {
   display: flex;

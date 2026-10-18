@@ -91,3 +91,12 @@ wrong, say so and propose a new entry instead of quietly working around it.
   and padd restarts (L-007).
 - **Rejected:** a Ghostty window per session (D-003); `claude -p` per Send (no live session to
   attach to).
+
+## D-011 · Claude places marks in fractions of the image · 2026-10-18
+- **Decision:** `ask`, `draw` and `note` take positions as fractions (0 to 1) of the image; padd
+  turns them into pixels from the size in the image's header. Claude's marks are lilac, the
+  user's amber.
+- **Why:** Claude estimates positions from the image it Read and never knows pixel sizes;
+  fractions hold for any render size.
+- **Rejected:** pixels (Claude would need the size first, and guesses badly); boxes from an
+  object detector (a dependency for a guess Claude makes well enough).

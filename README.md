@@ -34,9 +34,9 @@ padd board mood shot.png      # show one image by hand
 ```
 
 On the tablet, **Add image** (left of the filmstrip) takes a photo or picks images from the
-gallery: ideas, sketches, references. Subprojects are created on the tablet (tap the project name in the top bar) or by Claude's
+gallery: ideas, sketches, references. The **T** tool pins a text note where you tap. Subprojects are created on the tablet (tap the project name in the top bar) or by Claude's
 `link` tool. The tablet starts a subproject's session in the background (tap "Claude away").
-Any session gets the `padd` tools (`show`, `reply`, `link`, `status`); it receives your Sends only
+Any session gets the `padd` tools (`show`, `reply`, `ask`, `draw`, `note`, `link`, `status`); it receives your Sends only
 when started by padd (`padd attach`, `padd claude` or the tablet), which adds Claude Code's
 channel flag.
 

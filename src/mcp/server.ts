@@ -30,7 +30,15 @@ A Send arrives as <channel source="padd" ...>. Its body is the user's message (i
 - board_title, subproject, project: what was being reviewed.
 Act on the feedback, then answer with the padd reply tool (that's how the user, at the tablet, reads you; your terminal text does not reach them). Keep replies short and concrete.
 
-To put images in front of the user (renders, plots, screenshots, sketches you made), call padd show with absolute paths; the tablet jumps to them. Images in watched folders appear on their own. If padd status says the session isn't linked, ask the user which subproject this work belongs to and call padd link.`;
+To put images in front of the user (renders, plots, screenshots, sketches you made), call padd show with absolute paths; the tablet jumps to them. Images in watched folders appear on their own.
+
+You can work on the board itself, in lilac so the user tells your marks from theirs. Positions are fractions of the image: x from 0 (left) to 1 (right), y from 0 (top) to 1 (bottom); estimate them from the image you Read.
+- padd ask: ask about one part of an image; the tablet highlights the region and shows your question. The user's answer is a Send whose tag carries answering and question.
+- padd draw: arrows, circles, rectangles, lines, e.g. to point at what you changed.
+- padd note: a short text pinned to a point.
+They act on the board the user is looking at unless you pass board. Prefer one clear question over many.
+
+If padd status says the session isn't linked, ask the user which subproject this work belongs to and call padd link.`;
 
 const TOOLS = [
   {
@@ -57,6 +65,57 @@ const TOOLS = [
         board: { type: "string", description: "Id of the image the reply is about (the board attribute of the Send)" },
       },
       required: ["text"],
+    },
+  },
+  {
+    name: "ask",
+    description:
+      "Ask the user about one part of an image on their tablet: the region is highlighted and your question shown over it. They answer by drawing and pressing Send; it arrives tagged answering=<id>.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "One short, concrete question" },
+        region: {
+          type: "object",
+          description: "The part of the image it's about, as fractions of its size (0 to 1)",
+          properties: { x: { type: "number" }, y: { type: "number" }, w: { type: "number" }, h: { type: "number" } },
+          required: ["x", "y", "w", "h"],
+        },
+        board: { type: "string", description: "Board id; default: the one the user is looking at" },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "draw",
+    description:
+      "Draw on an image on the user's tablet, in your colour (lilac). Coordinates are fractions of the image: [x, y] with 0,0 top-left and 1,1 bottom-right.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shapes: {
+          type: "array",
+          description:
+            'Shapes, each one of: {"type":"arrow","from":[x,y],"to":[x,y]}, {"type":"circle","center":[x,y],"radius":r or [rx,ry]}, {"type":"rect","x":..,"y":..,"w":..,"h":..}, {"type":"line","points":[[x,y],...]}',
+          items: { type: "object" },
+        },
+        board: { type: "string", description: "Board id; default: the one the user is looking at" },
+      },
+      required: ["shapes"],
+    },
+  },
+  {
+    name: "note",
+    description: "Pin a short text note to a point of an image on the user's tablet, in your colour.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "A few words" },
+        x: { type: "number", description: "0 (left) to 1 (right)" },
+        y: { type: "number", description: "0 (top) to 1 (bottom)" },
+        board: { type: "string", description: "Board id; default: the one the user is looking at" },
+      },
+      required: ["text", "x", "y"],
     },
   },
   {
@@ -117,6 +176,18 @@ export async function runMcp(opts: McpOptions): Promise<void> {
         case "reply":
           await call("reply", { text: args.text, board: args.board });
           return text("Sent to the tablet.");
+        case "ask": {
+          const r = (await call("ask", { question: args.question, region: args.region, board: args.board })) as { board: string; question: string };
+          return text(`Asked on board ${r.board}. The answer will arrive as a Send with answering="${r.question}".`);
+        }
+        case "draw": {
+          const r = (await call("draw", { shapes: args.shapes, board: args.board })) as { board: string; strokes: string[] };
+          return text(`Drew ${r.strokes.length} shape(s) on board ${r.board}.`);
+        }
+        case "note": {
+          const r = (await call("note", { text: args.text, x: args.x, y: args.y, board: args.board })) as { board: string };
+          return text(`Pinned the note on board ${r.board}.`);
+        }
         case "link": {
           const { place: linked } = (await call("link", { subproject: args.subproject, brief: args.brief })) as { place: Place };
           place = linked;
@@ -171,6 +242,10 @@ async function forward(mcp: Server, d: Delivery): Promise<void> {
     meta.board = d.board.id;
     meta.board_title = d.board.title;
     meta.image = d.board.path;
+  }
+  if (d.message.answering) {
+    meta.answering = d.message.answering;
+    if (d.question) meta.question = d.question.slice(0, 300);
   }
   await mcp.notification({
     method: "notifications/claude/channel",

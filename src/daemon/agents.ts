@@ -12,6 +12,8 @@ export interface Delivery {
   place: Place;
   message: Message;
   board?: Board & { path: string };
+  /** For an answer: the question it answers. */
+  question?: string;
 }
 
 interface Agent {
@@ -102,7 +104,8 @@ export class Agents {
         // the board is gone; deliver the message anyway
       }
     }
-    const delivery: Delivery = { type: "send", place, message, board };
+    const question = message.answering ? (await store.messages()).find((m) => m.id === message.answering)?.text : undefined;
+    const delivery: Delivery = { type: "send", place, message, board, ...(question ? { question } : {}) };
     this.say(session, delivery);
     await store.markDelivered([message.id]);
     this.events.emit({ type: "message", ...place, message: { ...message, delivered: true } });

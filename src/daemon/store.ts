@@ -10,9 +10,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
-import type { Author, Board, BoardInk, Message, Stroke } from "../shared/types.ts";
+import type { Author, Board, BoardInk, Message, Note, Stroke } from "../shared/types.ts";
+import { imageSize } from "./imagesize.ts";
 
-type InkOp = { op: "add"; stroke: Stroke } | { op: "erase"; ids: string[]; t: number };
+type InkOp = { op: "add"; stroke: Stroke } | { op: "note"; note: Note } | { op: "erase"; ids: string[]; t: number };
 type MessageOp = { op: "add"; message: Message } | { op: "delivered"; ids: string[] };
 
 export const IMAGE_TYPES: Record<string, string> = {
@@ -65,7 +66,16 @@ export class Store {
   async addBoardBytes(bytes: Buffer, ext: string, title: string, author: Author, source?: string): Promise<Board> {
     if (!IMAGE_TYPES[ext]) throw new Invalid(`unsupported image type ${ext || "(none)"}`);
     const hash = createHash("sha1").update(bytes).digest("hex");
-    const board: Board = { id: newId(), title, image: `image${ext}`, author, t: Date.now(), hash, ...(source ? { source } : {}) };
+    const board: Board = {
+      id: newId(),
+      title,
+      image: `image${ext}`,
+      author,
+      t: Date.now(),
+      hash,
+      ...(source ? { source } : {}),
+      ...imageSize(bytes),
+    };
     const dir = this.boardDir(board.id);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, board.image), bytes);
@@ -109,20 +119,40 @@ export class Store {
     }
   }
 
+  /** The image's size in pixels, read from its header (and remembered) for older boards. */
+  async size(id: string): Promise<{ w: number; h: number }> {
+    const board = await this.board(id);
+    if (board.w && board.h) return { w: board.w, h: board.h };
+    const size = imageSize(await readFile(join(this.boardDir(id), board.image)));
+    if (!size) throw new Invalid(`can't read the size of board ${id}'s image`);
+    await writeFile(join(this.boardDir(id), "board.json"), JSON.stringify({ ...board, ...size }, null, 2));
+    return size;
+  }
+
   async imagePath(id: string): Promise<string> {
     const board = await this.board(id);
     return join(this.boardDir(id), board.image);
   }
 
-  /** The board with its strokes as they stand now (adds minus erases). */
+  /** The board with its strokes and notes as they stand now (adds minus erases). */
   async ink(id: string): Promise<BoardInk> {
     const board = await this.board(id);
     const strokes = new Map<string, Stroke>();
+    const notes = new Map<string, Note>();
     for (const op of await readLog<InkOp>(join(this.boardDir(id), "ink.jsonl"))) {
       if (op.op === "add") strokes.set(op.stroke.id, op.stroke);
-      else for (const sid of op.ids) strokes.delete(sid);
+      else if (op.op === "note") notes.set(op.note.id, op.note);
+      else for (const gone of op.ids) {
+        strokes.delete(gone);
+        notes.delete(gone);
+      }
     }
-    return { board, strokes: [...strokes.values()] };
+    return { board, strokes: [...strokes.values()], notes: [...notes.values()] };
+  }
+
+  async addNote(id: string, note: Note): Promise<void> {
+    await this.board(id);
+    await this.append(id, { op: "note", note });
   }
 
   async addStroke(id: string, stroke: Stroke): Promise<void> {

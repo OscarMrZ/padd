@@ -79,9 +79,12 @@ async function openBoard(id: string): Promise<void> {
   if (seq !== state.seq) return;
   state.board = data.board;
   state.seen.add(id);
+  // Claude's draw, note and ask act on the board you're looking at.
+  void api(`/api/p/${enc(state.project!.id, state.sub!.id)}/viewing`, { board: id }).catch(() => {});
   view.open(`${base()}/${enc(id)}`, data, image);
   $<HTMLButtonElement>(".send").disabled = false;
   renderStrip();
+  renderQuestion();
   syncHash();
 }
 
@@ -296,6 +299,7 @@ function onEvent(e: PaddEvent): void {
   }
   if (!here || e.board !== state.board?.id || e.origin === clientId) return;
   if (e.type === "stroke") view.remoteStroke(e.stroke);
+  else if (e.type === "note") view.remoteNote(e.note);
   else view.remoteErase(e.ids);
 }
 
@@ -446,13 +450,19 @@ const talkBtn = $<HTMLButtonElement>(".talk");
 const replyCard = $<HTMLButtonElement>(".reply-card");
 let replyTimer = 0;
 
-function openComposer(): void {
+/** The question the composer answers, when opened from a question card. */
+let answering: Message | null = null;
+
+function openComposer(question: Message | null = null): void {
   if (!state.board || !state.sub) return;
+  answering = question;
   const who = composer.querySelector(".who")!;
   who.replaceChildren(
-    ...(state.session.live
-      ? ["To Claude in ", el("strong", {}, state.sub.title), ", with this image and your marks."]
-      : ["No Claude session for ", el("strong", {}, state.sub.title), " is connected. Your Send waits and goes out as soon as one starts."]),
+    ...(question
+      ? ["Answering Claude: ", el("strong", {}, question.text), " Your marks on the image go along."]
+      : state.session.live
+        ? ["To Claude in ", el("strong", {}, state.sub.title), ", with this image and your marks."]
+        : ["No Claude session for ", el("strong", {}, state.sub.title), " is connected. Your Send waits and goes out as soon as one starts."]),
   );
   composer.hidden = false;
   replyCard.hidden = true;
@@ -475,7 +485,7 @@ composer.addEventListener("submit", async (e) => {
   try {
     const { message, delivered } = await api<{ message: Message; delivered: boolean }>(
       `/api/p/${enc(state.project!.id, state.sub!.id)}/send`,
-      { board: state.board.id, text: textarea.value, snapshot },
+      { board: state.board.id, text: textarea.value, snapshot, ...(answering ? { answering: answering.id } : {}) },
     );
     receive(message);
     textarea.value = "";
@@ -509,13 +519,41 @@ function receive(m: Message): void {
     state.messages.push(m);
     if (m.author === "claude" && talk.hidden) {
       state.unread++;
-      replyCard.textContent = m.text;
-      replyCard.hidden = false;
-      clearTimeout(replyTimer);
-      replyTimer = window.setTimeout(() => (replyCard.hidden = true), 15_000);
+      // A question shows as a card over its image instead.
+      if (!m.question) {
+        replyCard.textContent = m.text;
+        replyCard.hidden = false;
+        clearTimeout(replyTimer);
+        replyTimer = window.setTimeout(() => (replyCard.hidden = true), 15_000);
+      }
     }
   }
   renderMessages();
+  renderQuestion();
+}
+
+// ---------- Claude's questions: a card over the image, the region highlighted ----------
+
+const questionCard = $<HTMLElement>(".question");
+const dismissed = new Set<string>();
+
+/** Claude's latest question about the open board that has no answer yet. */
+function openQuestion(): Message | undefined {
+  const answered = new Set(state.messages.map((m) => m.answering).filter(Boolean));
+  return state.messages.findLast(
+    (m) => m.question && m.board === state.board?.id && !answered.has(m.id) && !dismissed.has(m.id),
+  );
+}
+
+function renderQuestion(): void {
+  const q = openQuestion();
+  questionCard.hidden = !q;
+  view.setRegion(q?.region ?? null);
+  if (!q) return;
+  questionCard.querySelector("p")!.textContent = q.text;
+  // Keep the card off the part Claude asks about.
+  const middle = q.region ? q.region.y + q.region.h / 2 : 1;
+  questionCard.dataset.at = middle < 0.5 ? "bottom" : "top";
 }
 
 function renderMessages(): void {
@@ -531,6 +569,8 @@ function renderMessages(): void {
   list.replaceChildren(
     ...state.messages.map((m) => {
       const li = el("li", { class: `msg ${m.author}` }, m.text || (m.author === "me" ? "(just the marks)" : ""));
+      if (m.question) li.prepend(el("span", { class: "kind" }, "Question"));
+      if (m.answering) li.prepend(el("span", { class: "kind" }, "Answer"));
       const meta = el("div", { class: "meta" }, time(m.t));
       const board = m.board ? state.boards.find((b) => b.id === m.board) : undefined;
       if (board) meta.append(el("button", { class: "on", "data-board": board.id }, board.title));
@@ -592,6 +632,12 @@ document.addEventListener("click", (e) => {
   const d = b.dataset;
   if (b === placeBtn) return nav.hidden ? openNav() : closeNav();
   if (b.classList.contains("send")) return composer.hidden ? openComposer() : closeComposer();
+  if (d.question === "answer") return openComposer(openQuestion() ?? null);
+  if (d.question === "later") {
+    const q = openQuestion();
+    if (q) dismissed.add(q.id);
+    return renderQuestion();
+  }
   if (b === statusBtn) return sessionPop.hidden ? openSessionPop() : closeSessionPop();
   if (d.session === "start" || d.session === "window") {
     closeSessionPop();

@@ -148,3 +148,28 @@ test("the tablet can't start a second copy of a session that is already connecte
   const window = await fetch(`${base}/api/p/tofu/mood/session/window`, { method: "POST", headers: auth, body: "{}" });
   assert.equal(window.status, 409);
 });
+
+test("Claude draws, pins notes and asks about the board the user is looking at", async () => {
+  const [board] = await get<{ id: string }[]>("/api/p/tofu/mood/boards");
+  const view = await fetch(`${base}/api/p/tofu/mood/viewing`, { method: "POST", headers: auth, body: JSON.stringify({ board: board!.id }) });
+  assert.equal(view.status, 200);
+  assert.equal((JSON.parse((await tool("status")).text) as { viewing: string }).viewing, board!.id);
+
+  assert.match((await tool("draw", { shapes: [{ type: "circle", center: [0.5, 0.5], radius: 0.3 }] })).text, /Drew 1 shape/);
+  assert.match((await tool("note", { text: "this edge", x: 0.5, y: 0.2 })).text, /Pinned/);
+  const ink = await get<{ strokes: { author: string }[]; notes: { author: string; text: string }[] }>(`/api/p/tofu/mood/boards/${board!.id}`);
+  assert.ok(ink.strokes.some((x) => x.author === "claude"));
+  assert.deepEqual(ink.notes.map((n) => [n.author, n.text]), [["claude", "this edge"]]);
+  assert.equal((await tool("draw", { shapes: [{ type: "blob" }] })).error, true);
+
+  const asked = await tool("ask", { question: "Is this edge too sharp?", region: { x: 0.3, y: 0.1, w: 0.4, h: 0.2 } });
+  const id = asked.text.match(/answering="([^"]+)"/)![1]!;
+  const before = channel.length;
+  const answer = await send({ board: board!.id, text: "yes, round it", answering: id });
+  assert.equal(answer.status, 201);
+  await until(() => channel.length === before + 1);
+  const e = channel.at(-1)!;
+  assert.equal(e.meta.answering, id);
+  assert.equal(e.meta.question, "Is this edge too sharp?");
+  assert.equal((await send({ answering: "nope" })).status, 404);
+});

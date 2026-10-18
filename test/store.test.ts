@@ -80,3 +80,14 @@ test("hashes cover old boards too", async () => {
   assert.deepEqual([...(await store.hashes())], [hash]);
   assert.equal(JSON.parse(await readFile(path, "utf8")).hash, hash);
 });
+
+test("notes live in the ink log and erase like strokes", async () => {
+  const { store, image } = await fixture();
+  const { id } = await store.addBoard(image, "front", "me");
+  await store.addNote(id, { id: "n1", author: "claude", x: 10, y: 20, text: "rounder?", t: 1 });
+  await store.addStroke(id, stroke("s1"));
+  assert.deepEqual((await store.ink(id)).notes.map((n) => n.text), ["rounder?"]);
+  await store.erase(id, ["n1"]);
+  const ink = await store.ink(id);
+  assert.deepEqual([ink.notes.length, ink.strokes.length], [0, 1]);
+});

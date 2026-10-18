@@ -2,7 +2,7 @@
 // Every finished stroke is saved at once; nothing here talks to Claude.
 
 import { fit, hits, simplify, toImage, widthAt, zoomAt, type View } from "../src/shared/ink.ts";
-import type { BoardInk, Stroke, Tool } from "../src/shared/types.ts";
+import type { BoardInk, Note, Region, Stroke, Tool } from "../src/shared/types.ts";
 import { api, toast } from "./api.ts";
 
 export const COLORS = [
@@ -19,8 +19,10 @@ const SNAPSHOT_MAX = 2400; // px on the long side of what Claude sees
 const PEN_AS_MOUSE_MS = 400; // a "mouse" event this soon after the pen is the pen
 const LONG_PRESS_SLOP = 8; // screen px a stroke must have moved for a mid-stroke press to count
 
-export type Mode = Tool | "eraser";
-type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[] };
+export type Mode = Tool | "eraser" | "text";
+type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[]; notes: Note[] };
+
+const AUTHOR_COLOR = { me: "#f2a65a", claude: "#b9a3f0" };
 
 export interface BoardView {
   /** Shows a board; `base` is its API path. */
@@ -28,7 +30,10 @@ export interface BoardView {
   close(): void;
   /** Applies a change another view made. */
   remoteStroke(stroke: Stroke): void;
+  remoteNote(note: Note): void;
   remoteErase(ids: string[]): void;
+  /** Highlights the part of the image Claude asks about (null: none). */
+  setRegion(region: Region | null): void;
   /** True while the pen or eraser is down: don't swap the board under it. */
   busy(): boolean;
   /** The image with all its ink, as a PNG data URL: what a Send shows Claude. */
@@ -55,6 +60,8 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     base: "",
     image: null as HTMLImageElement | null,
     strokes: [] as Stroke[],
+    notes: [] as Note[],
+    region: null as Region | null,
     view: { x: 0, y: 0, scale: 1 } as View,
     /** Keep the image fitted as the stage resizes, until the user pans or zooms. */
     autoFit: true,
@@ -103,7 +110,138 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     toImageSpace(ink);
     ink.imageSmoothingQuality = "high";
     ink.drawImage(state.image, 0, 0);
+    if (state.region) drawRegion(ink, state.region, 1 / state.view.scale);
     for (const s of state.strokes) drawStroke(ink, s);
+    placeNotes();
+  }
+
+  /** Claude's question region: a dashed lilac frame, its line width in screen pixels via `px`. */
+  function drawRegion(ctx: CanvasRenderingContext2D, r: Region, px: number): void {
+    const { naturalWidth: w, naturalHeight: h } = state.image!;
+    ctx.save();
+    ctx.fillStyle = "rgba(185, 163, 240, 0.14)";
+    ctx.strokeStyle = AUTHOR_COLOR.claude;
+    ctx.lineWidth = 2.5 * px;
+    ctx.setLineDash([10 * px, 7 * px]);
+    ctx.fillRect(r.x * w, r.y * h, r.w * w, r.h * h);
+    ctx.strokeRect(r.x * w, r.y * h, r.w * w, r.h * h);
+    ctx.restore();
+  }
+
+  // ---------- notes: DOM labels over the canvas, so they stay readable at any zoom ----------
+
+  const notesLayer = document.createElement("div");
+  notesLayer.className = "notes";
+  stage.append(notesLayer);
+
+  function placeNotes(): void {
+    const els = new Map([...notesLayer.children].map((el) => [(el as HTMLElement).dataset.id!, el as HTMLElement]));
+    for (const n of state.notes) {
+      let el = els.get(n.id);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = `note ${n.author}`;
+        el.dataset.id = n.id;
+        el.textContent = n.text;
+        notesLayer.append(el);
+      }
+      els.delete(n.id);
+      el.style.left = `${state.view.x + n.x * state.view.scale}px`;
+      el.style.top = `${state.view.y + n.y * state.view.scale}px`;
+    }
+    for (const el of els.values()) el.remove();
+  }
+
+  /** Writes notes into a snapshot, scaled to the image, so Claude reads them too. */
+  function drawNotes(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const font = Math.max(14, Math.round(Math.max(w, h) * 0.018));
+    const pad = font * 0.5;
+    const maxWidth = w * 0.4;
+    ctx.save();
+    ctx.font = `500 ${font}px Barlow, sans-serif`;
+    ctx.textBaseline = "top";
+    for (const n of state.notes) {
+      const lines = wrap(ctx, n.text, maxWidth);
+      const width = Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2;
+      const height = lines.length * font * 1.25 + pad * 2;
+      const x = Math.min(n.x, w - width);
+      const y = Math.min(n.y, h - height);
+      ctx.fillStyle = "rgba(20, 26, 46, 0.88)";
+      ctx.fillRect(x, y, width, height);
+      ctx.fillStyle = AUTHOR_COLOR[n.author];
+      ctx.fillRect(x, y, pad * 0.5, height);
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, font * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#e6e4ef";
+      lines.forEach((l, i) => ctx.fillText(l, x + pad, y + pad + i * font * 1.25));
+    }
+    ctx.restore();
+  }
+
+  function wrap(ctx: CanvasRenderingContext2D, text: string, max: number): string[] {
+    const lines: string[] = [];
+    for (const para of text.split("\n")) {
+      let line = "";
+      for (const word of para.split(/\s+/)) {
+        const next = line ? `${line} ${word}` : word;
+        if (ctx.measureText(next).width > max && line) {
+          lines.push(line);
+          line = word;
+        } else line = next;
+      }
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  // ---------- the text tool: tap to place a note, then type (or write with the keyboard) ----------
+
+  let placing: { id: number; x: number; y: number } | null = null;
+  /** Saves (or drops) the note being typed, if any. */
+  let finishEditing: ((save: boolean) => Promise<void>) | null = null;
+
+  function openEditor(sx: number, sy: number): void {
+    closeEditor(true);
+    const [ix, iy] = toImage(state.view, sx, sy);
+    const base = state.base;
+    const box = document.createElement("textarea");
+    box.className = "note-editor";
+    box.maxLength = 500;
+    box.placeholder = "Note";
+    box.style.left = `${sx}px`;
+    box.style.top = `${sy}px`;
+    let done = false;
+    const commit = async (save: boolean) => {
+      if (done) return;
+      done = true;
+      const text = box.value.trim();
+      box.remove();
+      if (finishEditing === commit) finishEditing = null;
+      if (!save || !text || state.base !== base) return;
+      try {
+        const note = await api<Note>(`${base}/notes`, { x: ix, y: iy, text });
+        state.notes.push(note);
+        state.undo.push({ kind: "add", id: note.id });
+        placeNotes();
+      } catch (err) {
+        toast(`Note not saved: ${(err as Error).message}`);
+      }
+    };
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void commit(true);
+      } else if (e.key === "Escape") void commit(false);
+    });
+    box.addEventListener("blur", () => void commit(true));
+    finishEditing = commit;
+    stage.append(box);
+    box.focus();
+  }
+
+  function closeEditor(save: boolean): void {
+    void finishEditing?.(save);
   }
 
   function drawStroke(ctx: CanvasRenderingContext2D, s: Stroke): void {
@@ -146,7 +284,7 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
   // ---------- input ----------
 
   let drawing: { id: number; stroke: Stroke } | null = null;
-  let erasing: { id: number; erased: Stroke[] } | null = null;
+  let erasing: { id: number; erased: Stroke[]; notes: Note[] } | null = null;
   const touches = new Map<number, { x: number; y: number }>();
   let gesture: { view: View; dist: number; mid: { x: number; y: number } } | null = null;
   let mousePan: { id: number; x: number; y: number } | null = null;
@@ -189,6 +327,8 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
   }
 
   stage.addEventListener("pointerdown", (e) => {
+    // Cards and the note editor sit on the stage: taps on them aren't ink.
+    if ((e.target as Element).closest(".question, .note-editor")) return;
     if (e.pointerType === "touch") return touchDown(e);
     if (e.pointerType === "pen") {
       state.penSeen = performance.now();
@@ -201,9 +341,15 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
       return;
     }
     if (!state.image || drawing || erasing) return;
+    if (state.mode === "text" && !penButton(e)) {
+      // Open the editor when the tap ends: focusing during pointerdown loses the keyboard on Android.
+      const { x, y } = local(e);
+      placing = { id: e.pointerId, x, y };
+      return;
+    }
     capture(e.pointerId);
     if (wantsEraser(e)) {
-      erasing = { id: e.pointerId, erased: [] };
+      erasing = { id: e.pointerId, erased: [], notes: [] };
       eraseAt(e);
       return;
     }
@@ -246,7 +392,7 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     if (penButton(e) && touching(e) && state.image && (!drawing || drawing.id === e.pointerId)) {
       if (drawing) dropStroke();
       capture(e.pointerId);
-      erasing = { id: e.pointerId, erased: [] };
+      erasing = { id: e.pointerId, erased: [], notes: [] };
       return eraseAt(e);
     }
     if (drawing?.id !== e.pointerId) return;
@@ -267,6 +413,12 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     stage.addEventListener(type, (e) => {
       if (e.pointerType === "touch") return touchUp(e);
       if (mousePan?.id === e.pointerId) mousePan = null;
+      if (placing?.id === e.pointerId) {
+        const { x, y } = placing;
+        placing = null;
+        if (type === "pointerup") openEditor(x, y);
+        return;
+      }
       if (erasing?.id === e.pointerId) return void finishErase();
       if (drawing?.id === e.pointerId) return type === "pointerup" ? void finishStroke() : dropStroke();
     });
@@ -291,7 +443,7 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
       if (!moved) return;
       const id = drawing.id;
       dropStroke();
-      erasing = { id, erased: [] };
+      erasing = { id, erased: [], notes: [] };
     }
     toggleEraser();
   });
@@ -306,6 +458,7 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
   }
 
   function setMode(mode: Mode): void {
+    if (mode !== "text") closeEditor(true);
     state.mode = mode;
     stage.dataset.tool = mode;
   }
@@ -359,23 +512,32 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     const [ix, iy] = toImage(state.view, x, y);
     const r = ERASER_RADIUS / state.view.scale;
     const gone = state.strokes.filter((s) => s.id && hits(s, ix, iy, r));
-    if (gone.length === 0) return;
+    // A note goes when the eraser touches its label.
+    const goneNotes = state.notes.filter((n) => {
+      const box = notesLayer.querySelector<HTMLElement>(`[data-id="${n.id}"]`)?.getBoundingClientRect();
+      return box && e.clientX > box.left - ERASER_RADIUS && e.clientX < box.right + ERASER_RADIUS &&
+        e.clientY > box.top - ERASER_RADIUS && e.clientY < box.bottom + ERASER_RADIUS;
+    });
+    if (gone.length === 0 && goneNotes.length === 0) return;
     erasing!.erased.push(...gone);
+    erasing!.notes.push(...goneNotes);
     state.strokes = state.strokes.filter((s) => !gone.includes(s));
+    state.notes = state.notes.filter((n) => !goneNotes.includes(n));
     redraw();
   }
 
   async function finishErase(): Promise<void> {
-    const { erased } = erasing!;
+    const { erased, notes } = erasing!;
     const base = state.base;
     erasing = null;
-    if (erased.length === 0) return;
+    if (erased.length === 0 && notes.length === 0) return;
     try {
-      await api(`${base}/erase`, { ids: erased.map((s) => s.id) });
-      if (state.base === base) state.undo.push({ kind: "erase", strokes: erased });
+      await api(`${base}/erase`, { ids: [...erased.map((s) => s.id), ...notes.map((n) => n.id)] });
+      if (state.base === base) state.undo.push({ kind: "erase", strokes: erased, notes });
     } catch (err) {
       if (state.base === base) {
         state.strokes.push(...erased);
+        state.notes.push(...notes);
         redraw();
       }
       toast(`Not erased: ${(err as Error).message}`);
@@ -390,12 +552,14 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
       if (step.kind === "add") {
         await api(`${base}/erase`, { ids: [step.id] });
         state.strokes = state.strokes.filter((s) => s.id !== step.id);
+        state.notes = state.notes.filter((n) => n.id !== step.id);
       } else {
-        // Bring erased strokes back as new strokes.
+        // Bring erased strokes and notes back as new ones.
         for (const s of step.strokes) {
           const { id } = await api<{ id: string }>(`${base}/strokes`, s);
           state.strokes.push({ ...s, id });
         }
+        for (const n of step.notes) state.notes.push(await api<Note>(`${base}/notes`, { x: n.x, y: n.y, text: n.text }));
       }
       redraw();
     } catch (err) {
@@ -457,12 +621,23 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
   return {
     open(base, data, image) {
       dropStroke();
-      Object.assign(state, { base, image, strokes: data.strokes, autoFit: true, undo: [] });
+      closeEditor(true);
+      Object.assign(state, { base, image, strokes: data.strokes, notes: data.notes ?? [], region: null, autoFit: true, undo: [] });
       resize();
     },
     close() {
       dropStroke();
-      Object.assign(state, { base: "", image: null, strokes: [], undo: [] });
+      closeEditor(true);
+      Object.assign(state, { base: "", image: null, strokes: [], notes: [], region: null, undo: [] });
+      redraw();
+    },
+    remoteNote(note) {
+      if (state.notes.some((n) => n.id === note.id)) return;
+      state.notes.push(note);
+      placeNotes();
+    },
+    setRegion(region) {
+      state.region = region;
       redraw();
     },
     remoteStroke(stroke) {
@@ -472,6 +647,7 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
     },
     remoteErase(ids) {
       state.strokes = state.strokes.filter((s) => !ids.includes(s.id));
+      state.notes = state.notes.filter((n) => !ids.includes(n.id));
       redraw();
     },
     busy: () => drawing !== null || erasing !== null,
@@ -485,7 +661,9 @@ export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): Boa
       const ctx = canvas.getContext("2d")!;
       ctx.scale(k, k);
       ctx.drawImage(state.image, 0, 0);
+      if (state.region) drawRegion(ctx, state.region, Math.max(w, h) / 1000);
       for (const s of state.strokes) drawStroke(ctx, s);
+      drawNotes(ctx, w, h);
       return canvas.toDataURL("image/png");
     },
     fit() {

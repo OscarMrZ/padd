@@ -4,13 +4,14 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, sep } from "node:path";
-import type { Author, Board, Place, Point, ProjectSummary, SessionState, Stroke } from "../shared/types.ts";
+import type { Author, Board, Note, Place, Point, ProjectSummary, SessionState, Stroke } from "../shared/types.ts";
 import { Agents } from "./agents.ts";
 import { Launcher, type LauncherOptions } from "./launcher.ts";
 import { COOKIE, presented, same } from "./auth.ts";
 import { Events } from "./events.ts";
 import { findRepo, PADD_DIR, slug, type Project, type Registry } from "./registry.ts";
 import { hashFile, IMAGE_TYPES, Invalid, NotFound, newId, type Store } from "./store.ts";
+import { region, shapesToStrokes } from "./shapes.ts";
 import { thumbnail } from "./thumbs.ts";
 
 export interface Options {
@@ -35,7 +36,11 @@ interface Ctx {
   events: Events;
   agents: Agents;
   launcher?: Launcher;
+  /** The board each subproject's tablet shows right now: Claude's tools default to it. */
+  viewing: Map<string, string>;
 }
+
+const placeKey = (p: Place) => `${p.project}/${p.sub}`;
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -56,7 +61,7 @@ export class Conflict extends Error {}
 export function createPaddServer(opts: Options): PaddServer {
   const events = new Events();
   const agents = new Agents(events);
-  const ctx: Ctx = { opts, events, agents };
+  const ctx: Ctx = { opts, events, agents, viewing: new Map() };
   if (opts.launch) {
     ctx.launcher = new Launcher({
       ...opts.launch,
@@ -145,6 +150,11 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
     if (method === "GET" && boards === "messages") return send(res, 200, await store.messages());
     if (method === "GET" && boards === "session") return send(res, 200, await sessionState(ctx, place));
     if (method === "POST" && boards === "send") return sendToClaude(ctx, req, res, place, store);
+    if (method === "POST" && boards === "viewing") {
+      const { board } = (await body(req)) as { board?: unknown };
+      if (typeof board === "string") ctx.viewing.set(placeKey(place), (await store.board(board)).id);
+      return send(res, 200, { viewing: board });
+    }
   }
   // /api/p/<project>/<sub>/session/start|window: run the session in a window on the computer.
   if (sub && rest.length === 3 && boards === "session" && method === "POST") {
@@ -205,6 +215,15 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
     await store.addStroke(boardId, stroke);
     events.emit({ type: "stroke", ...place, board: boardId, stroke, origin: origin(req) });
     return send(res, 201, { id: stroke.id });
+  } else if (part === "notes" && method === "POST") {
+    const { x, y, text } = (await body(req)) as { x?: unknown; y?: unknown; text?: unknown };
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+      throw new Invalid("x and y must be numbers");
+    }
+    const note: Note = { id: newId(), author: "me", x, y, text: noteText(text), t: Date.now() };
+    await store.addNote(boardId, note);
+    events.emit({ type: "note", ...place, board: boardId, note, origin: origin(req) });
+    return send(res, 201, note);
   } else if (part === "erase" && method === "POST") {
     const ids = ((await body(req)) as { ids?: unknown }).ids;
     if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) throw new Invalid("ids must be strings");
@@ -250,7 +269,12 @@ async function announce(ctx: Ctx, place: Place, extra: Partial<SessionState> = {
 
 /** The tablet's Send: save what Claude will see, log it, and hand it to the linked session. */
 async function sendToClaude(ctx: Ctx, req: IncomingMessage, res: ServerResponse, place: Place, store: Store): Promise<void> {
-  const { board, text, snapshot } = (await body(req, MAX_SEND)) as { board?: unknown; text?: unknown; snapshot?: unknown };
+  const { board, text, snapshot, answering } = (await body(req, MAX_SEND)) as {
+    board?: unknown;
+    text?: unknown;
+    snapshot?: unknown;
+    answering?: unknown;
+  };
   const message = typeof text === "string" ? text.trim().slice(0, MAX_MESSAGE) : "";
   const prefix = "data:image/png;base64,";
   if (typeof snapshot !== "string" || !snapshot.startsWith(prefix)) throw new Invalid("snapshot must be a PNG data URL");
@@ -258,12 +282,19 @@ async function sendToClaude(ctx: Ctx, req: IncomingMessage, res: ServerResponse,
   if (png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Invalid("snapshot is not a PNG");
   let boardId: string | undefined;
   if (typeof board === "string") boardId = (await store.board(board)).id;
+  let question: string | undefined;
+  if (typeof answering === "string") {
+    const q = (await store.messages()).find((m) => m.id === answering && m.question);
+    if (!q) throw new NotFound(`no question ${answering}`);
+    question = q.id;
+  }
   const saved = await store.addMessage({
     author: "me",
     text: message,
     board: boardId,
     snapshot: await store.saveSnapshot(png),
     delivered: false,
+    ...(question ? { answering: question } : {}),
   });
   ctx.events.emit({ type: "message", ...place, message: saved });
   const delivered = await ctx.agents.deliver(place, saved, store);
@@ -336,6 +367,43 @@ async function agentRoute(ctx: Ctx, req: IncomingMessage, res: ServerResponse, u
     return send(res, 201, message);
   }
 
+  if (route === "draw" || route === "note" || route === "ask") {
+    const boardId = await pickBoard(ctx, place, store, b.board);
+    if (route === "draw") {
+      const { w, h } = await store.size(boardId);
+      const strokes = shapesToStrokes(b.shapes, w, h);
+      for (const stroke of strokes) {
+        await store.addStroke(boardId, stroke);
+        ctx.events.emit({ type: "stroke", ...place, board: boardId, stroke });
+      }
+      ctx.events.emit({ type: "focus", ...place, board: boardId });
+      return send(res, 201, { board: boardId, strokes: strokes.map((x) => x.id) });
+    }
+    if (route === "note") {
+      const [x, y] = [b.x, b.y];
+      if (typeof x !== "number" || typeof y !== "number" || x < -0.1 || x > 1.1 || y < -0.1 || y > 1.1) {
+        throw new Invalid("x and y must be fractions of the image (0 to 1)");
+      }
+      const { w, h } = await store.size(boardId);
+      const note: Note = { id: newId(), author: "claude", x: x * w, y: y * h, text: noteText(b.text), t: Date.now() };
+      await store.addNote(boardId, note);
+      ctx.events.emit({ type: "note", ...place, board: boardId, note });
+      ctx.events.emit({ type: "focus", ...place, board: boardId });
+      return send(res, 201, { board: boardId, note: note.id });
+    }
+    if (typeof b.question !== "string" || !b.question.trim()) throw new Invalid("question must not be empty");
+    const message = await store.addMessage({
+      author: "claude",
+      text: b.question.trim().slice(0, MAX_MESSAGE),
+      board: boardId,
+      question: true,
+      ...(b.region === undefined ? {} : { region: region(b.region) }),
+    });
+    ctx.events.emit({ type: "message", ...place, message });
+    ctx.events.emit({ type: "focus", ...place, board: boardId });
+    return send(res, 201, { board: boardId, question: message.id });
+  }
+
   if (route === "show") {
     const paths = b.paths;
     if (!Array.isArray(paths) || paths.length === 0 || paths.length > 50) throw new Invalid("paths must list 1 to 50 images");
@@ -372,6 +440,27 @@ export function decodeImage(raw: unknown): { bytes: Buffer; ext: string } {
   };
   if (!magic[m[1]!]!(bytes)) throw new Invalid(`that isn't a ${m[1]} image`);
   return { bytes, ext: m[1] === "jpeg" ? ".jpg" : `.${m[1]}` };
+}
+
+/** The board Claude means: the one given, else the one the tablet shows, else the newest. */
+async function pickBoard(ctx: Ctx, place: Place, store: Store, given: unknown): Promise<string> {
+  if (typeof given === "string" && given) return (await store.board(given)).id;
+  const viewing = ctx.viewing.get(placeKey(place));
+  if (viewing) {
+    try {
+      return (await store.board(viewing)).id;
+    } catch {
+      // that board is gone
+    }
+  }
+  const latest = (await store.boards()).at(-1);
+  if (!latest) throw new Conflict("there are no images in this subproject yet; show one first");
+  return latest.id;
+}
+
+function noteText(raw: unknown): string {
+  if (typeof raw !== "string" || !raw.trim()) throw new Invalid("text must not be empty");
+  return raw.trim().slice(0, 500);
 }
 
 async function hashOrThrow(path: string): Promise<string> {
@@ -422,6 +511,7 @@ async function status(ctx: Ctx, session: string): Promise<unknown> {
     const store = await project.store(place.sub);
     const boards = await store.boards();
     out.boards = boards.length;
+    out.viewing = ctx.viewing.get(placeKey(place)) ?? null;
     out.latest = await Promise.all(
       boards.slice(-10).reverse().map(async (x) => ({ id: x.id, title: x.title, author: x.author, image: await store.imagePath(x.id) })),
     );

@@ -11,7 +11,8 @@ Where PADD is and what comes next. Update it when a step lands.
    `padd claude <sub>` launches the session. Watched folders turn new renders into boards.
 4. ✅ **Sessions from the tablet.** Start or resume a subproject's session in the background from
    the tablet; `padd sessions` and `padd attach` on the computer.
-5. **Claude drives the review.** `show`, `ask_feedback`, `draw`, `note`, `reply`.
+5. ✅ **Claude drives the review.** `ask` (a question over a highlighted region, answered by a
+   Send), `draw` and `note` in Claude's lilac; text notes on the tablet (the Text tool).
 6. ✅ **Service.** `padd service install`: a systemd user unit that starts with the desktop session.
 
-**Next step:** 5. Claude drives the review (`ask_feedback`, `draw`, `note`).
+**Next step:** none planned: use it on tofu and collect what's missing.
