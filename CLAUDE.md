@@ -21,7 +21,7 @@ PADD is a tablet web app for drawing feedback to Claude Code sessions. It is bui
   UI compiled by `tsc -p ui` to `dist/web/` (never committed).
 - `npm test` (node:test) and `npm run check` (tsc) pass before every commit.
 - PADD runs as the `padd` systemd user service: after a change, `npm run build && systemctl --user
-  restart padd` (log: `~/.local/state/padd/padd.log`). Live Claude sessions reconnect on their own.
+  restart padd` (logs: `journalctl --user -u padd`). Live Claude sessions reconnect on their own.
 
 ## Git
 

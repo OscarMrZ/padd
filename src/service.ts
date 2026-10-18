@@ -1,9 +1,8 @@
 // padd serve as a systemd user service: it starts with the desktop session, restarts if it
-// crashes, and logs to ~/.local/state/padd/padd.log (user-service output doesn't always reach a
-// journal the user can read).
+// crashes, and logs to the journal (journalctl --user -u padd).
 
 import { execFile } from "node:child_process";
-import { chmod, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -18,13 +17,6 @@ export interface UnitOptions {
   cli: string;
   /** The padd repo. */
   root: string;
-  /** Absolute path of the log file. */
-  log: string;
-}
-
-export function logPath(): string {
-  const state = process.env.XDG_STATE_HOME ?? join(homedir(), ".local", "state");
-  return join(state, "padd", "padd.log");
 }
 
 /**
@@ -43,8 +35,7 @@ ExecStart=${o.node} ${o.cli} serve
 WorkingDirectory=${o.root}
 Restart=on-failure
 RestartSec=3
-StandardOutput=append:${o.log}
-StandardError=append:${o.log}
+SyslogIdentifier=padd
 
 [Install]
 WantedBy=graphical-session.target
@@ -70,8 +61,6 @@ export async function install(o: UnitOptions): Promise<string> {
   }
   const path = unitPath();
   await mkdir(join(path, ".."), { recursive: true });
-  await mkdir(join(o.log, ".."), { recursive: true });
-  await chmod(join(o.log, ".."), 0o700);
   await writeFile(path, unit(o));
   await systemctl("daemon-reload");
   await systemctl("enable", UNIT);

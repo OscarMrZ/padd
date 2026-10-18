@@ -12,7 +12,7 @@ import { findRepo, initRepo, installMcp, PADD_DIR, Registry } from "./daemon/reg
 import { createPaddServer } from "./daemon/server.ts";
 import { Watcher } from "./daemon/watch.ts";
 import { runMcp, sessionFromEnv } from "./mcp/server.ts";
-import { install, logPath, state, uninstall } from "./service.ts";
+import { install, state, uninstall } from "./service.ts";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const CONFIG = process.env.XDG_CONFIG_HOME ? join(process.env.XDG_CONFIG_HOME, "padd") : join(homedir(), ".config", "padd");
@@ -57,7 +57,7 @@ async function serve(argv: string[]): Promise<void> {
   const port = Number(values.port);
   server.listen(port, values.host, () => {
     console.log(`PADD online on ${values.host}:${port}.`);
-    // The links carry the token: show them in a terminal, never in a log file.
+    // The links carry the token: show them in a terminal, never in the journal.
     if (process.stdout.isTTY) printLinks(token, port);
     else console.log("Tablet links: run padd link.");
     void watcher.sync();
@@ -67,14 +67,14 @@ async function serve(argv: string[]): Promise<void> {
 async function service(argv: string[]): Promise<void> {
   const [action] = argv;
   if (action === "install") {
-    const path = await install({ node: process.execPath, cli: join(ROOT, "src", "cli.ts"), root: ROOT, log: logPath() });
+    const path = await install({ node: process.execPath, cli: join(ROOT, "src", "cli.ts"), root: ROOT });
     console.log(`PADD now runs in the background (${path}): ${await state()}.`);
-    console.log(`It starts with your desktop session. Log: ${logPath()}`);
+    console.log("It starts with your desktop session. Logs: journalctl --user -u padd -f");
   } else if (action === "uninstall") {
     await uninstall();
     console.log("PADD no longer runs in the background.");
   } else if (action === "status" || action === undefined) {
-    console.log(`padd.service: ${await state()}. Log: ${logPath()}`);
+    console.log(`padd.service: ${await state()}. Logs: journalctl --user -u padd -f`);
   } else {
     throw new Error("usage: padd service install|uninstall|status");
   }

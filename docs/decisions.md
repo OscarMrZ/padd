@@ -75,7 +75,7 @@ wrong, say so and propose a new entry instead of quietly working around it.
 
 ## D-009 · PADD runs as a systemd user service in the desktop session · 2026-10-18
 - **Decision:** `padd service install` writes `padd.service`, wanted by `graphical-session.target`,
-  restarting on failure, logging to `~/.local/state/padd/padd.log`.
+  restarting on failure, logging to the journal as `padd` (`journalctl --user -u padd`).
 - **Why:** no terminal to keep open; the desktop session's environment (`WAYLAND_DISPLAY`, PATH
   with mise shims) is what padd needs to open Ghostty windows for sessions.
 - **Rejected:** `default.target` (may start before the compositor exports Wayland); lingering at

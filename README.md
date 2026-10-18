@@ -18,8 +18,8 @@ padd link                                  # the tablet links (they carry the ac
 npm test && npm run check                  # tests, types
 ```
 
-After changing PADD: `npm run build && systemctl --user restart padd`. Log:
-`~/.local/state/padd/padd.log`. `padd serve` runs it in a terminal instead (stop the service first).
+After changing PADD: `npm run build && systemctl --user restart padd`. Logs:
+`journalctl --user -u padd -f`. `padd serve` runs it in a terminal instead (stop the service first).
 
 ```sh
 In a repo:
