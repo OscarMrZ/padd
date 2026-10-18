@@ -20,12 +20,15 @@ section for an area before working in it.
 
 ## UI
 
-### L-008 · Watch pen buttons in pointermove, not only pointerdown · 2026-10-18
-- **What happened:** the S Pen side button didn't erase. In Chromium, a button pressed while the
-  pen is down or hovering arrives as a `pointermove` with new `buttons` (a chord), with no
-  `pointerdown`; some Android browsers report it as a mouse right-click instead.
-- **Rule:** `penButton()` and the chord check in `pointermove` (`ui/board.ts`). Open the tablet
-  with `?debug` to see every input event a device sends; "Send log" writes it to padd's journal.
+### L-008 · Expect the S Pen side button as `contextmenu`, not as a pen button · 2026-10-18
+- **What happened:** the side button didn't erase. We first assumed it shows in pointer events
+  (`buttons` 2/32, or a chord in `pointermove`). The `?debug` log from the tablet (DuckDuckGo,
+  i.e. Android WebView) showed strokes only ever carry `buttons=1`; each button press arrives as
+  a `contextmenu` event (pointerType pen, mouse or empty) with no release, and no hover events at
+  all. A double press is Samsung's Notes shortcut and never reaches the page.
+- **Rule:** a non-touch `contextmenu` toggles the eraser; mid-stroke (after 8 px of movement, to
+  skip long presses) it turns the stroke into an erase (`ui/board.ts`). Keep the pointer-button
+  checks for browsers that do report them. Diagnose a new device with `?debug` → Send log.
 
 ## Sessions
 

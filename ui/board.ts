@@ -17,6 +17,7 @@ const ERASER_RADIUS = 14; // screen px
 const PALM_GUARD_MS = 600; // ignore touches this long after the pen was near
 const SNAPSHOT_MAX = 2400; // px on the long side of what Claude sees
 const PEN_AS_MOUSE_MS = 400; // a "mouse" event this soon after the pen is the pen
+const LONG_PRESS_SLOP = 8; // screen px a stroke must have moved for a mid-stroke press to count
 
 export type Mode = Tool | "eraser";
 type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[] };
@@ -39,7 +40,12 @@ export interface BoardView {
   setSize(size: number): void;
 }
 
-export function createBoardView(stage: HTMLElement): BoardView {
+export interface BoardHooks {
+  /** The view changed the tool itself (the S Pen side button): update the toolbar. */
+  onMode?: (mode: Mode) => void;
+}
+
+export function createBoardView(stage: HTMLElement, hooks: BoardHooks = {}): BoardView {
   const inkCanvas = stage.querySelector<HTMLCanvasElement>("canvas.ink")!;
   const liveCanvas = stage.querySelector<HTMLCanvasElement>("canvas.live")!;
   const ink = inkCanvas.getContext("2d")!;
@@ -150,6 +156,15 @@ export function createBoardView(stage: HTMLElement): BoardView {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
+  /** Keeps a pointer's events coming here; harmless if the browser has already let it go. */
+  function capture(id: number): void {
+    try {
+      stage.setPointerCapture(id);
+    } catch {
+      // the pointer is gone (lifted, or cancelled by the browser)
+    }
+  }
+
   function pressure(e: PointerEvent): number {
     return e.pointerType === "pen" ? e.pressure : 0.5;
   }
@@ -180,12 +195,13 @@ export function createBoardView(stage: HTMLElement): BoardView {
       cancelGesture(); // a palm that landed first must not keep panning
     }
     if (e.pointerType === "mouse" && e.button !== 0 && !penButton(e)) {
+      lastRightClick = performance.now();
       mousePan = { id: e.pointerId, x: e.clientX, y: e.clientY };
-      stage.setPointerCapture(e.pointerId);
+      capture(e.pointerId);
       return;
     }
     if (!state.image || drawing || erasing) return;
-    stage.setPointerCapture(e.pointerId);
+    capture(e.pointerId);
     if (wantsEraser(e)) {
       erasing = { id: e.pointerId, erased: [] };
       eraseAt(e);
@@ -229,14 +245,15 @@ export function createBoardView(stage: HTMLElement): BoardView {
     // without a pointerdown before it. Start erasing there, dropping any line in progress.
     if (penButton(e) && touching(e) && state.image && (!drawing || drawing.id === e.pointerId)) {
       if (drawing) dropStroke();
-      stage.setPointerCapture(e.pointerId);
+      capture(e.pointerId);
       erasing = { id: e.pointerId, erased: [] };
       return eraseAt(e);
     }
     if (drawing?.id !== e.pointerId) return;
     const pts = drawing.stroke.points;
     const minStep = 0.75 / state.view.scale;
-    for (const ce of e.getCoalescedEvents?.() ?? [e]) {
+    const coalesced = e.getCoalescedEvents?.() ?? [];
+    for (const ce of coalesced.length > 0 ? coalesced : [e]) {
       const { x, y } = local(ce);
       const [ix, iy] = toImage(state.view, x, y);
       const last = pts[pts.length - 1]!;
@@ -255,7 +272,43 @@ export function createBoardView(stage: HTMLElement): BoardView {
     });
   }
 
-  stage.addEventListener("contextmenu", (e) => e.preventDefault());
+  // In Android WebView browsers (DuckDuckGo, many in-app browsers) the S Pen side button never
+  // shows in pointer events: each press arrives as a contextmenu event, with no release (L-008).
+  // So a press toggles the eraser; pressed mid-stroke, the rest of that stroke erases.
+  let lastRightClick = -Infinity;
+  let toolBeforeEraser: Mode = "pen";
+  window.addEventListener("contextmenu", (e) => {
+    if ((e.target as Element).closest?.("input, textarea")) return; // keep copy and paste there
+    e.preventDefault();
+    const kind = (e as PointerEvent).pointerType ?? "";
+    if (kind === "touch") return; // a finger's long press
+    if (performance.now() - lastRightClick < 1500) return; // a desktop right-click (it pans)
+    if (drawing) {
+      // A pen held still also fires contextmenu (a long press): only a moving stroke counts.
+      const pts = drawing.stroke.points;
+      const [x0, y0] = pts[0]!;
+      const moved = pts.some(([x, y]) => Math.hypot(x - x0, y - y0) * state.view.scale > LONG_PRESS_SLOP);
+      if (!moved) return;
+      const id = drawing.id;
+      dropStroke();
+      erasing = { id, erased: [] };
+    }
+    toggleEraser();
+  });
+
+  function toggleEraser(): void {
+    if (state.mode === "eraser") setMode(toolBeforeEraser);
+    else {
+      toolBeforeEraser = state.mode;
+      setMode("eraser");
+    }
+    hooks.onMode?.(state.mode);
+  }
+
+  function setMode(mode: Mode): void {
+    state.mode = mode;
+    stage.dataset.tool = mode;
+  }
 
   stage.addEventListener(
     "wheel",
@@ -354,7 +407,7 @@ export function createBoardView(stage: HTMLElement): BoardView {
 
   function touchDown(e: PointerEvent): void {
     if (drawing || erasing || performance.now() - state.penSeen < PALM_GUARD_MS) return;
-    stage.setPointerCapture(e.pointerId);
+    capture(e.pointerId);
     touches.set(e.pointerId, local(e));
     startGesture();
   }
@@ -441,10 +494,7 @@ export function createBoardView(stage: HTMLElement): BoardView {
       redraw();
     },
     undo,
-    setMode(mode) {
-      state.mode = mode;
-      stage.dataset.tool = mode;
-    },
+    setMode,
     setColor(color) {
       state.color = color;
     },

@@ -8,7 +8,7 @@ import { startDebug } from "./debug.ts";
 
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!;
 
-const view = createBoardView($<HTMLElement>(".stage"));
+const view = createBoardView($<HTMLElement>(".stage"), { onMode: (mode) => showMode(mode) });
 
 const state = {
   projects: [] as ProjectSummary[],
@@ -550,6 +550,11 @@ function time(t: number): string {
 
 function setMode(mode: Mode): void {
   view.setMode(mode);
+  showMode(mode);
+}
+
+/** Lights the rail's button for the current tool. */
+function showMode(mode: Mode): void {
   for (const b of document.querySelectorAll<HTMLButtonElement>(".tool")) {
     b.setAttribute("aria-pressed", String(b.dataset.tool === mode));
   }
