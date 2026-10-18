@@ -201,11 +201,13 @@ function subprojectForm(p: ProjectSummary): HTMLFormElement {
   const form = el("form") as HTMLFormElement;
   const name = el("input", { name: "title", required: "", maxlength: "60", autocomplete: "off" }) as HTMLInputElement;
   const brief = el("textarea", { name: "brief", maxlength: "4000" }) as HTMLTextAreaElement;
+  const start = el("input", { type: "checkbox", name: "start", checked: "" }) as HTMLInputElement;
   const error = el("p", { class: "error", role: "alert" });
   error.hidden = true;
   form.append(
     el("label", {}, "Name", name),
     el("label", {}, "Brief: what this work is about", brief),
+    el("label", { class: "check" }, start, "Start a Claude session for it (in the background)"),
     error,
     el("div", { class: "actions" }, el("button", { type: "button", class: "ghost", "data-cancel": "" }, "Cancel"), el("button", { class: "primary" }, "Create subproject")),
   );
@@ -216,6 +218,7 @@ function subprojectForm(p: ProjectSummary): HTMLFormElement {
       await loadProjects();
       closeNav();
       await go(p.id, sub.id);
+      if (start.checked) await sessionAction("start");
     } catch (err) {
       error.textContent = (err as Error).message;
       error.hidden = false;
@@ -266,6 +269,8 @@ function onEvent(e: PaddEvent): void {
     if (here) {
       state.session = e.state;
       renderPresence();
+      // Connection events don't know about windows: ask for the full picture.
+      if (e.state.running === undefined) void refreshSession();
     }
     return;
   }
@@ -300,11 +305,92 @@ async function resync(): Promise<void> {
 
 function renderPresence(): void {
   if (!state.online) return;
-  if (state.session.live) setStatus("Claude here", "claude");
+  const s = state.session;
+  if (s.live) setStatus("Claude here", "claude");
+  else if (s.running) setStatus(s.needsTrust ? "Claude waits for you" : "Claude starting", "starting");
   else setStatus("Claude away", "idle");
+  if (!sessionPop.hidden) renderSessionPop();
 }
 
-function setStatus(text: string, s: "claude" | "idle" | "error"): void {
+// ---------- the session: start it, show its window ----------
+
+const sessionPop = $<HTMLElement>(".session-pop");
+const statusBtn = $<HTMLButtonElement>(".status");
+
+function openSessionPop(): void {
+  if (!state.sub || !state.online) return;
+  replyCard.hidden = true;
+  renderSessionPop();
+  sessionPop.hidden = false;
+  statusBtn.setAttribute("aria-expanded", "true");
+}
+
+function closeSessionPop(): void {
+  sessionPop.hidden = true;
+  statusBtn.setAttribute("aria-expanded", "false");
+}
+
+function renderSessionPop(): void {
+  const s = state.session;
+  const title = state.sub?.title ?? "";
+  const cmd = `padd attach ${state.project?.id}/${state.sub?.id}`;
+  const hint = el("p", { class: "note" }, "On the computer, ", el("code", {}, cmd), " opens it in any terminal.");
+  const parts: (Node | string)[] = [];
+  const actions = el("div", { class: "actions" });
+  if (s.live) {
+    parts.push(el("p", {}, `Claude is working on ${title}. Your Sends go straight to it.`));
+    if (s.running) {
+      parts.push(hint);
+      actions.append(el("button", { class: "primary", "data-session": "window" }, "Show its window on the computer"));
+    } else parts.push(el("p", { class: "note" }, "It runs in a terminal you started yourself, on the computer."));
+  } else if (s.running) {
+    parts.push(
+      el("p", {}, s.needsTrust
+        ? "Claude Code asks whether you trust this project's folder. Answer it on the computer."
+        : `Claude is starting for ${title} in the background.`),
+      hint,
+    );
+    actions.append(el("button", { class: "primary", "data-session": "window" }, "Show its window on the computer"));
+  } else {
+    parts.push(
+      el("p", {}, s.session
+        ? `Claude isn't running for ${title}. Start it to pick up the conversation where it left off.`
+        : `${title} has no Claude session yet. Start one to begin from its brief.`),
+      el("p", { class: "note" }, "It runs in the background on the computer. Sends you make meanwhile wait for it."),
+    );
+    actions.append(el("button", { class: "primary", "data-session": "start" }, "Start Claude"));
+  }
+  if (actions.childElementCount > 0) parts.push(actions);
+  sessionPop.replaceChildren(...parts);
+}
+
+async function sessionAction(action: "start" | "window"): Promise<void> {
+  if (!state.project || !state.sub) return;
+  try {
+    const { result } = await api<{ result: string }>(`/api/p/${enc(state.project.id, state.sub.id)}/session/${action}`, {});
+    const said: Record<string, string> = {
+      started: "Starting Claude in the background",
+      running: "Claude is already running on the computer",
+      opened: "Window opened on the computer",
+      "already open": "Its window is already open on the computer",
+    };
+    toast(said[result] ?? "Done", "ok");
+    await refreshSession();
+  } catch (err) {
+    toast((err as Error).message);
+  }
+}
+
+async function refreshSession(): Promise<void> {
+  if (!state.project || !state.sub) return;
+  const place = `${state.project.id}/${state.sub.id}`;
+  const s = await api<SessionState>(`/api/p/${enc(state.project.id, state.sub.id)}/session`);
+  if (place !== `${state.project?.id}/${state.sub?.id}`) return;
+  state.session = { ...s, needsTrust: s.running && !s.live ? state.session.needsTrust : false };
+  renderPresence();
+}
+
+function setStatus(text: string, s: "claude" | "starting" | "idle" | "error"): void {
   const status = $<HTMLElement>(".status");
   status.textContent = text;
   status.dataset.state = s;
@@ -327,6 +413,7 @@ function openComposer(): void {
       : ["No Claude session for ", el("strong", {}, state.sub.title), " is connected. Your Send waits and goes out as soon as one starts."]),
   );
   composer.hidden = false;
+  replyCard.hidden = true;
   $(".send").setAttribute("aria-expanded", "true");
   composer.querySelector("textarea")!.focus();
 }
@@ -452,11 +539,17 @@ document.addEventListener("click", (e) => {
   const target = e.target as Element;
   if (!nav.hidden && !nav.contains(target) && !placeBtn.contains(target)) closeNav();
   if (!composer.hidden && !composer.contains(target) && !target.closest(".send")) closeComposer();
+  if (!sessionPop.hidden && !sessionPop.contains(target) && !statusBtn.contains(target)) closeSessionPop();
   const b = target.closest<HTMLButtonElement>("button");
   if (!b) return;
   const d = b.dataset;
   if (b === placeBtn) return nav.hidden ? openNav() : closeNav();
   if (b.classList.contains("send")) return composer.hidden ? openComposer() : closeComposer();
+  if (b === statusBtn) return sessionPop.hidden ? openSessionPop() : closeSessionPop();
+  if (d.session === "start" || d.session === "window") {
+    closeSessionPop();
+    return void sessionAction(d.session);
+  }
   if (b === talkBtn || b === replyCard) return talk.hidden ? openTalk() : closeTalk();
   if (d.close === "composer") return closeComposer();
   if (d.close === "talk") return closeTalk();
@@ -489,6 +582,7 @@ document.addEventListener("keydown", (e) => {
     closeNav();
     closeComposer();
     closeTalk();
+    closeSessionPop();
   }
   else if (e.key === "ArrowLeft") step(1); // older
   else if (e.key === "ArrowRight") step(-1); // newer

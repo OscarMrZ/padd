@@ -26,14 +26,18 @@ In a repo:
 
 ```sh
 padd init                     # make it a project: .padd/config.json, .mcp.json (commit both)
-padd claude mood              # start or resume the "mood" session, wired to the tablet
+padd sessions                 # every subproject's Claude session, and its state
+padd attach tofu/mood         # talk to it here (starts it in the background if stopped; Ctrl-b d leaves it running)
+padd claude mood              # or run it in this terminal instead of the background
 padd watch mood mood/renders  # images saved there show up on the tablet on their own
 padd board mood shot.png      # show one image by hand
 ```
 
 Subprojects are created on the tablet (tap the project name in the top bar) or by Claude's
-`link` tool. A session gets the `padd` tools in any case (`show`, `reply`, `link`, `status`); it
-receives your Sends only when started with `padd claude` (Claude Code needs its channel flag).
+`link` tool. The tablet starts a subproject's session in the background (tap "Claude away").
+Any session gets the `padd` tools (`show`, `reply`, `link`, `status`); it receives your Sends only
+when started by padd (`padd attach`, `padd claude` or the tablet), which adds Claude Code's
+channel flag.
 
 If the tablet can't connect, open the port to your LAN (ufw example):
 `sudo ufw allow from 192.168.1.0/24 to any port 8788 proto tcp comment padd`.

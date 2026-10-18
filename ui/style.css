@@ -151,6 +151,8 @@ svg {
 .status {
   margin-left: auto;
   margin-right: 4px;
+  padding: 6px 12px;
+  border-radius: 999px;
   font: 400 15px/1 var(--display);
   color: var(--dim);
   white-space: nowrap;
@@ -167,8 +169,15 @@ svg {
   vertical-align: 1px;
 }
 
+.status:hover, .status[aria-expanded="true"] { background: var(--deck); }
 .status[data-state="claude"] { --status: var(--lilac); color: var(--text); }
+.status[data-state="starting"] { --status: var(--amber); color: var(--text); }
+.status[data-state="starting"]::before { animation: pulse 1.2s ease-in-out infinite; }
 .status[data-state="error"] { --status: var(--rose); }
+
+@keyframes pulse {
+  50% { opacity: 0.3; }
+}
 
 .talk {
   position: relative;
@@ -556,7 +565,36 @@ svg {
 
 .nav .error { margin: 0; color: var(--rose); font-size: 14px; }
 
-/* ---- Send composer and messages ---- */
+.nav .check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.nav .check input { width: 18px; height: 18px; accent-color: var(--amber); }
+
+/* ---- Send composer, session control and messages ---- */
+
+.session-pop {
+  position: fixed;
+  z-index: 10;
+  top: calc(max(10px, env(safe-area-inset-top)) + var(--bar) + 4px);
+  right: max(10px, env(safe-area-inset-right));
+  width: min(380px, calc(100vw - 20px));
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 6px 6px 6px 22px;
+  background: #1b2340;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.45);
+}
+
+.session-pop p { margin: 0; }
+.session-pop .note { color: var(--dim); font-size: 14px; }
+.session-pop code { color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.session-pop .actions { justify-content: flex-start; }
 
 .composer {
   position: fixed;
@@ -712,7 +750,7 @@ svg {
   .strip { height: 82px; }
   .strip-info { display: none; }
   .send { padding: 7px 12px; font-size: 15px; }
-  .status { display: none; }
+  .status { padding: 6px 8px; font-size: 14px; }
   .thumb { height: 70px; }
 }
 

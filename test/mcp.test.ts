@@ -51,7 +51,13 @@ before(async () => {
   image = join(root, "render.png");
   await writeFile(image, PNG);
 
-  server = createPaddServer({ token: TOKEN, registry, uiDir: root, jsDir: root }).server;
+  server = createPaddServer({
+    token: TOKEN,
+    registry,
+    uiDir: root,
+    jsDir: root,
+    launch: { socket: `padd-mcp-test-${process.pid}`, command: () => ["true"], terminal: () => {} },
+  }).server;
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
   const port = (server.address() as AddressInfo).port;
   base = `http://127.0.0.1:${port}`;
@@ -133,4 +139,12 @@ test("bad Sends are refused", async () => {
 test("status tells Claude where it stands", async () => {
   const s = JSON.parse((await tool("status")).text) as { project: string; linked: string; boards: number };
   assert.deepEqual([s.project, s.linked, s.boards], ["tofu", "mood", 1]);
+});
+
+test("the tablet can't start a second copy of a session that is already connected", async () => {
+  const start = await fetch(`${base}/api/p/tofu/mood/session/start`, { method: "POST", headers: auth, body: "{}" });
+  assert.equal(start.status, 409);
+  assert.match(((await start.json()) as { error: string }).error, /already connected from a terminal/);
+  const window = await fetch(`${base}/api/p/tofu/mood/session/window`, { method: "POST", headers: auth, body: "{}" });
+  assert.equal(window.status, 409);
 });

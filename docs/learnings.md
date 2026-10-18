@@ -53,6 +53,13 @@ section for an area before working in it.
 - **Rule:** check `journalctl --since -60s | wc -l` and the top `_COMM` before blaming the journal.
   Keep logging to the journal (`SyslogIdentifier=padd`); never print the token there.
 
+### L-007 · Launch long-lived children of padd in their own systemd scope · 2026-10-18
+- **What happened:** `systemctl --user restart padd` killed the Claude sessions padd had started:
+  tmux and Ghostty were in padd.service's cgroup, and systemd stops the whole cgroup.
+- **Rule:** start them through `systemd-run --user --scope --collect` (`src/daemon/launcher.ts`).
+  Don't reach for `KillMode=process`: leftover processes in a service's cgroup are what systemd
+  warns about.
+
 ## Network
 
 ### L-004 · Open port 8788 in ufw, or the tablet can't connect · 2026-10-18

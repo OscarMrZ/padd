@@ -4,8 +4,9 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, sep } from "node:path";
-import type { Author, Board, Place, Point, ProjectSummary, Stroke } from "../shared/types.ts";
+import type { Author, Board, Place, Point, ProjectSummary, SessionState, Stroke } from "../shared/types.ts";
 import { Agents } from "./agents.ts";
+import { Launcher, type LauncherOptions } from "./launcher.ts";
 import { COOKIE, presented, same } from "./auth.ts";
 import { Events } from "./events.ts";
 import { findRepo, PADD_DIR, slug, type Project, type Registry } from "./registry.ts";
@@ -19,6 +20,8 @@ export interface Options {
   uiDir: string;
   /** Folder holding the compiled UI scripts, served under /js/. */
   jsDir: string;
+  /** How to start sessions from the tablet; without it, the tablet can't start them. */
+  launch?: Omit<LauncherOptions, "onTrust" | "onChange">;
 }
 
 export interface PaddServer {
@@ -31,6 +34,7 @@ interface Ctx {
   opts: Options;
   events: Events;
   agents: Agents;
+  launcher?: Launcher;
 }
 
 const TYPES: Record<string, string> = {
@@ -53,6 +57,13 @@ export function createPaddServer(opts: Options): PaddServer {
   const events = new Events();
   const agents = new Agents(events);
   const ctx: Ctx = { opts, events, agents };
+  if (opts.launch) {
+    ctx.launcher = new Launcher({
+      ...opts.launch,
+      onTrust: (place) => void announce(ctx, place, { needsTrust: true }),
+      onChange: (place) => void announce(ctx, place),
+    });
+  }
   const server = createServer((req, res) => {
     handle(ctx, req, res).catch((e: unknown) => {
       if (res.headersSent) return void res.end();
@@ -124,10 +135,28 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
     const store = await project.store(sub);
     const place = { project: project.id, sub };
     if (method === "GET" && boards === "messages") return send(res, 200, await store.messages());
-    if (method === "GET" && boards === "session") {
-      return send(res, 200, { live: ctx.agents.liveFor(place) !== undefined, session: await store.session() });
-    }
+    if (method === "GET" && boards === "session") return send(res, 200, await sessionState(ctx, place));
     if (method === "POST" && boards === "send") return sendToClaude(ctx, req, res, place, store);
+  }
+  // /api/p/<project>/<sub>/session/start|window: run the session in a window on the computer.
+  if (sub && rest.length === 3 && boards === "session" && method === "POST") {
+    await project.store(sub);
+    const place = { project: project.id, sub };
+    const launcher = ctx.launcher;
+    if (!launcher) throw new Conflict("this PADD can't start sessions");
+    const state = await sessionState(ctx, place);
+    if (boardId === "start") {
+      if (state.live && !state.running) {
+        throw new Conflict("Claude is already connected from a terminal you started; continue there");
+      }
+      const result = await launcher.start(place, project.path);
+      await announce(ctx, place);
+      return send(res, 200, { result });
+    }
+    if (boardId === "window") {
+      if (!state.running) throw new Conflict("this session isn't running in a PADD window");
+      return send(res, 200, { result: (await launcher.show(place)) ? "opened" : "already open" });
+    }
   }
 
   // /api/p/<project>/<sub>/boards[/<board>[/<part>]]
@@ -182,6 +211,24 @@ async function summaries(ctx: Ctx): Promise<ProjectSummary[]> {
       return { ...p, boards, live };
     }),
   );
+}
+
+async function sessionState(ctx: Ctx, place: Place): Promise<SessionState> {
+  const store = await (await ctx.opts.registry.project(place.project)).store(place.sub);
+  return {
+    live: ctx.agents.liveFor(place) !== undefined,
+    session: await store.session(),
+    running: ctx.launcher ? await ctx.launcher.running(place) : false,
+  };
+}
+
+/** Tells the tablets a session's state changed. */
+async function announce(ctx: Ctx, place: Place, extra: Partial<SessionState> = {}): Promise<void> {
+  try {
+    ctx.events.emit({ type: "session", ...place, state: { ...(await sessionState(ctx, place)), ...extra } });
+  } catch {
+    // the subproject went away meanwhile
+  }
 }
 
 /** The tablet's Send: save what Claude will see, log it, and hand it to the linked session. */

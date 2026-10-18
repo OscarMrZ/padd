@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { loadToken } from "./daemon/auth.ts";
 import { findRepo, initRepo, installMcp, PADD_DIR, Registry } from "./daemon/registry.ts";
+import { ghostty, Launcher, SOCKET, tmuxName } from "./daemon/launcher.ts";
 import { createPaddServer } from "./daemon/server.ts";
 import { Watcher } from "./daemon/watch.ts";
 import { runMcp, sessionFromEnv } from "./mcp/server.ts";
@@ -23,9 +24,12 @@ const USAGE = `usage:
   padd serve [--port ${PORT}] [--host 0.0.0.0]   run PADD in this terminal instead
   padd link [--port ${PORT}]                     print the links to open on the tablet
 
+  padd sessions                       every subproject's Claude session, across projects
+  padd attach [<project>/]<subproject>  talk to a session here (starts it in the background if needed)
+
   in a repo:
   padd init [--name <name>]           make it a padd project (${PADD_DIR}/, .mcp.json)
-  padd claude <subproject> [--new]    start or resume the subproject's Claude session, wired to the tablet
+  padd claude <subproject> [--new]    run the subproject's session in this terminal (not in the background)
   padd board <subproject> <image>...  show images on the tablet
   padd watch <subproject> [<dir>...]  images saved in these folders show up on their own (none: stop)
   padd session <subproject> [<id>]    show or set the Claude session linked to a subproject
@@ -52,7 +56,19 @@ async function serve(argv: string[]): Promise<void> {
     options: { port: { type: "string", default: PORT }, host: { type: "string", default: "0.0.0.0" } },
   });
   const token = await loadToken(join(CONFIG, "token"));
-  const { server, events } = createPaddServer({ token, registry, uiDir: join(ROOT, "ui"), jsDir: join(ROOT, "dist", "web") });
+  const { server, events } = createPaddServer({
+    token,
+    registry,
+    uiDir: join(ROOT, "ui"),
+    jsDir: join(ROOT, "dist", "web"),
+    // Sessions run `padd claude <sub>` with this very node and padd, whatever the PATH.
+    launch: {
+      socket: SOCKET,
+      command: (place) => [process.execPath, join(ROOT, "src", "cli.ts"), "claude", place.sub],
+      terminal: ghostty,
+      scope: true,
+    },
+  });
   const watcher = new Watcher(registry, events);
   const port = Number(values.port);
   server.listen(port, values.host, () => {
@@ -149,6 +165,126 @@ function firstPrompt(project: string, title: string, brief: string): string {
   ].filter(Boolean).join("\n\n");
 }
 
+// ---------- sessions on this computer ----------
+
+const tmux = new Launcher({ socket: SOCKET, command: () => [], terminal: () => {} });
+
+/** Calls padd serve; undefined if it isn't running. */
+async function daemon<T>(path: string, body?: unknown): Promise<T | undefined> {
+  const token = await loadToken(join(CONFIG, "token"));
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${process.env.PADD_PORT ?? PORT}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    return undefined;
+  }
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `padd answered ${res.status}`);
+  return data;
+}
+
+interface Row {
+  project: string;
+  sub: string;
+  state: string;
+  session: string;
+  active?: number;
+}
+
+async function rows(): Promise<Row[]> {
+  const live = new Map<string, boolean>();
+  for (const p of (await daemon<{ id: string; live: Record<string, boolean> }[]>("/api/projects")) ?? []) {
+    for (const [sub, on] of Object.entries(p.live)) live.set(`${p.id}/${sub}`, on);
+  }
+  const out: Row[] = [];
+  for (const p of await registry.projects()) {
+    const project = await registry.project(p.id);
+    for (const s of p.subprojects) {
+      const place = { project: p.id, sub: s.id };
+      const session = await (await project.store(s.id)).session();
+      const running = await tmux.running(place);
+      const here = live.get(`${p.id}/${s.id}`) ?? false;
+      const state = running
+        ? (await tmux.attached(place)) ? "open" : "background"
+        : here ? "terminal" : session ? "stopped" : "none";
+      out.push({ project: p.id, sub: s.id, state, session: session ?? "", active: session ? await lastActive(session) : undefined });
+    }
+  }
+  return out;
+}
+
+const STATES: Record<string, string> = {
+  open: "running, window open",
+  background: "running in the background",
+  terminal: "running in your own terminal",
+  stopped: "stopped (attach resumes it)",
+  none: "no session yet",
+};
+
+async function sessions(): Promise<void> {
+  const all = await rows();
+  if (all.length === 0) return console.log("No subprojects yet. Run padd init in a repo, then create one on the tablet.");
+  const tty = process.stdout.isTTY;
+  const paint = (code: string, text: string) => (tty ? `\x1b[${code}m${text}\x1b[0m` : text);
+  const color: Record<string, string> = { open: "35", background: "35", terminal: "35", stopped: "33", none: "2" };
+  const place = (r: Row) => `${r.project}/${r.sub}`;
+  const width = Math.max(...all.map((r) => place(r).length));
+  for (const r of all) {
+    const when = r.active ? ago(r.active) : "";
+    const id = r.session ? paint("2", r.session.slice(0, 8)) : "";
+    console.log(`${place(r).padEnd(width)}  ${paint(color[r.state] ?? "0", (STATES[r.state] ?? r.state).padEnd(30))}  ${id}  ${paint("2", when)}`);
+  }
+  console.log(paint("2", "\npadd attach <project>/<subproject> talks to one here."));
+}
+
+function ago(t: number): string {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return "active now";
+  if (m < 60) return `active ${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `active ${h} h ago` : `active ${Math.round(h / 24)} days ago`;
+}
+
+async function lastActive(id: string): Promise<number | undefined> {
+  const root = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+  for (const folder of await readdir(root).catch(() => [] as string[])) {
+    try {
+      return (await stat(join(root, folder, `${id}.jsonl`))).mtimeMs;
+    } catch {
+      // not in this folder
+    }
+  }
+  return undefined;
+}
+
+/** Attaches this terminal to a session, starting it in the background first if it's stopped. */
+async function attach(argv: string[]): Promise<void> {
+  const [target] = argv;
+  if (!target) throw new Error("usage: padd attach [<project>/]<subproject>");
+  let [projectId, subId] = target.includes("/") ? target.split("/", 2) : [undefined, target];
+  if (!projectId) projectId = await registry.register(await findRepo(process.cwd()));
+  const project = await registry.project(projectId);
+  const sub = await project.subproject(subId!);
+  const place = { project: project.id, sub: sub.id };
+  if (!(await tmux.running(place))) {
+    const state = await daemon<{ live: boolean }>(`/api/p/${place.project}/${place.sub}/session`);
+    if (state?.live) throw new Error(`${place.project}/${place.sub} runs in a terminal you started yourself; switch to that one`);
+    const started = await daemon<{ result: string }>(`/api/p/${place.project}/${place.sub}/session/start`, {});
+    if (!started) throw new Error("padd isn't running (padd service status); or run padd claude here instead");
+    for (let i = 0; i < 50 && !(await tmux.running(place)); i++) await new Promise((r) => setTimeout(r, 100));
+  }
+  // Detach with Ctrl-b d: the session keeps running in the background.
+  const child = spawn("tmux", ["-L", SOCKET, "attach", "-t", `=${tmuxName(place)}`], { stdio: "inherit" });
+  await new Promise<void>((done) => child.on("exit", (code) => {
+    process.exitCode = code ?? 0;
+    done();
+  }));
+}
+
 async function watchCmd(argv: string[]): Promise<void> {
   const [subId, ...dirs] = argv;
   if (!subId) throw new Error("usage: padd watch <subproject> [<dir>...]");
@@ -225,6 +361,9 @@ const commands: Record<string, (argv: string[]) => Promise<void>> = {
   link,
   board,
   claude,
+  sessions,
+  ls: sessions,
+  attach,
   watch: watchCmd,
   session,
   mcp,

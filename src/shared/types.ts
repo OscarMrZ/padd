@@ -67,6 +67,10 @@ export interface SessionState {
   live: boolean;
   /** The Claude Code session id linked to the subproject, if any. */
   session?: string;
+  /** Running in a window padd opened (so padd can show that window again). */
+  running?: boolean;
+  /** Claude Code is waiting for the user to confirm they trust the folder, at the computer. */
+  needsTrust?: boolean;
 }
 
 /** The committed `.padd/config.json` of a repo. */

@@ -32,7 +32,7 @@ wrong, say so and propose a new entry instead of quietly working around it.
 - **Rejected:** `claude -p --resume` per Send (no live terminal, clashes with an open session);
   hooks (only fire when the user prompts).
 
-## D-003 · Sessions run in tmux, shown in a Ghostty window · 2026-10-18
+## D-003 · Sessions run in tmux, shown in a Ghostty window · 2026-10-18 · Superseded by D-010
 - **Decision:** PADD starts `claude` in a detached tmux session (socket `-L padd`), answers the
   dev-channel warning with `send-keys`, then opens Ghostty attached to it.
 - **Why:** the warning needs a keypress (L-001); tmux keeps the session alive when the window
@@ -80,3 +80,14 @@ wrong, say so and propose a new entry instead of quietly working around it.
   with mise shims) is what padd needs to open Ghostty windows for sessions.
 - **Rejected:** `default.target` (may start before the compositor exports Wayland); lingering at
   boot (nothing to review before logging in).
+
+## D-010 · Sessions start headless; you attach when you want to talk · 2026-10-18
+- **Decision:** a session started from the tablet runs `padd claude <sub>` in padd's tmux
+  (`-L padd`), in its own systemd scope, with no window. `padd attach <project>/<sub>` opens it in
+  any terminal (starting it first if stopped); the tablet can also open a Ghostty window on it.
+  `padd sessions` lists them all.
+- **Why:** the user wants sessions working in the background and talks to them mostly from the
+  tablet; a window per session clutters the desktop. tmux keeps them alive across closed windows
+  and padd restarts (L-007).
+- **Rejected:** a Ghostty window per session (D-003); `claude -p` per Send (no live session to
+  attach to).
