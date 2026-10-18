@@ -1,22 +1,34 @@
 #!/usr/bin/env node
 // padd: draw feedback for Claude Code sessions from a tablet.
 
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readdir, stat } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { loadToken } from "./daemon/auth.ts";
-import { findRepo, initRepo, PADD_DIR, Registry } from "./daemon/registry.ts";
+import { findRepo, initRepo, installMcp, PADD_DIR, Registry } from "./daemon/registry.ts";
 import { createPaddServer } from "./daemon/server.ts";
+import { Watcher } from "./daemon/watch.ts";
+import { runMcp, sessionFromEnv } from "./mcp/server.ts";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const CONFIG = process.env.XDG_CONFIG_HOME ? join(process.env.XDG_CONFIG_HOME, "padd") : join(homedir(), ".config", "padd");
 const PORT = "8788";
 
 const USAGE = `usage:
-  padd init [--name <name>]           make this repo a padd project (writes ${PADD_DIR}/)
-  padd serve [--port ${PORT}] [--host 0.0.0.0]
-  padd link [--port ${PORT}]           print the links to open on the tablet
-  padd board <subproject> <image>...  show images on the tablet (padd serve must be running)
+  padd serve [--port ${PORT}] [--host 0.0.0.0]   run PADD (leave it running)
+  padd link [--port ${PORT}]                     print the links to open on the tablet
+
+  in a repo:
+  padd init [--name <name>]           make it a padd project (${PADD_DIR}/, .mcp.json)
+  padd claude <subproject> [--new]    start or resume the subproject's Claude session, wired to the tablet
+  padd board <subproject> <image>...  show images on the tablet
+  padd watch <subproject> [<dir>...]  images saved in these folders show up on their own (none: stop)
+  padd session <subproject> [<id>]    show or set the Claude session linked to a subproject
+
+  padd mcp                            the MCP server Claude Code runs (from .mcp.json)
 `;
 
 const registry = new Registry(join(CONFIG, "projects.json"));
@@ -26,8 +38,10 @@ async function init(argv: string[]): Promise<void> {
   const repo = process.cwd();
   const created = await initRepo(repo, values.name);
   const id = await registry.register(repo);
-  console.log(created ? `${repo} is now padd project "${id}".` : `${repo} is padd project "${id}" (already set up).`);
-  console.log(`Commit ${PADD_DIR}/config.json and ${PADD_DIR}/.gitignore; boards stay local in ${PADD_DIR}/data/.`);
+  const wired = await installMcp(repo);
+  console.log(created ? `${repo} is now padd project "${id}".` : `${repo} is padd project "${id}".`);
+  if (wired.length > 0) console.log(`Wired Claude Code to padd: ${wired.join(", ")}.`);
+  console.log(`Commit ${PADD_DIR}/config.json, ${PADD_DIR}/.gitignore and .mcp.json; boards stay local in ${PADD_DIR}/data/.`);
 }
 
 async function serve(argv: string[]): Promise<void> {
@@ -36,12 +50,105 @@ async function serve(argv: string[]): Promise<void> {
     options: { port: { type: "string", default: PORT }, host: { type: "string", default: "0.0.0.0" } },
   });
   const token = await loadToken(join(CONFIG, "token"));
-  const { server } = createPaddServer({ token, registry, uiDir: join(ROOT, "ui"), jsDir: join(ROOT, "dist", "web") });
+  const { server, events } = createPaddServer({ token, registry, uiDir: join(ROOT, "ui"), jsDir: join(ROOT, "dist", "web") });
+  const watcher = new Watcher(registry, events);
   const port = Number(values.port);
   server.listen(port, values.host, () => {
     console.log("PADD online.");
     printLinks(token, port);
+    void watcher.sync();
   });
+}
+
+async function mcp(): Promise<void> {
+  await runMcp({
+    token: await loadToken(join(CONFIG, "token")),
+    port: Number(process.env.PADD_PORT ?? PORT),
+    session: sessionFromEnv(),
+    repo: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+    sub: process.env.PADD_SUBPROJECT || undefined,
+  });
+}
+
+/** Runs claude here, in this terminal, as the subproject's session with the padd channel on. */
+async function claude(argv: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { new: { type: "boolean" } } });
+  const [subId] = positionals;
+  if (!subId) throw new Error("usage: padd claude <subproject> [--new]");
+  const repo = await findRepo(process.cwd());
+  const project = await registry.project(await registry.register(repo));
+  const sub = await project.subproject(subId);
+  const store = await project.store(sub.id);
+  const linked = values.new ? undefined : await store.session();
+  // A linked session that never got going (Claude quit at a prompt) has no transcript to resume.
+  const resume = linked !== undefined && (await transcriptExists(linked));
+  // The channel flag takes a list: it goes first, so it can't swallow the prompt at the end.
+  const args = ["--dangerously-load-development-channels", "server:padd"];
+  if (resume) {
+    args.push("--resume", linked);
+  } else {
+    const id = linked ?? randomUUID();
+    await store.setSession(id);
+    args.push("--session-id", id, "--name", `${project.id}/${sub.id}`);
+  }
+  if (!resume) args.push(firstPrompt(project.id, sub.title, sub.brief));
+  console.log(resume ? `Resuming ${project.id}/${sub.id} (${linked}).` : `Starting ${project.id}/${sub.id}.`);
+  console.log("Claude Code asks once to confirm the development channel: choose option 1.");
+  const child = spawn("claude", args, { cwd: repo, stdio: "inherit", env: { ...process.env, PADD_SUBPROJECT: sub.id } });
+  await new Promise<void>((done) => child.on("exit", (code) => {
+    process.exitCode = code ?? 0;
+    done();
+  }));
+}
+
+/** Whether Claude Code has a transcript for a session (~/.claude/projects/<folder>/<id>.jsonl). */
+async function transcriptExists(id: string): Promise<boolean> {
+  const root = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects");
+  let folders: string[];
+  try {
+    folders = await readdir(root);
+  } catch {
+    return false;
+  }
+  for (const folder of folders) {
+    try {
+      await stat(join(root, folder, `${id}.jsonl`));
+      return true;
+    } catch {
+      // not in this folder
+    }
+  }
+  return false;
+}
+
+function firstPrompt(project: string, title: string, brief: string): string {
+  return [
+    `You're working on "${title}" in ${project}. The user reviews your work on PADD, their drawing tablet: show them images with the padd show tool, read their Sends (marked-up snapshots), and answer with padd reply.`,
+    brief ? `Brief: ${brief}` : "",
+    "Start with padd status, then tell the user on the tablet what you plan to do first.",
+  ].filter(Boolean).join("\n\n");
+}
+
+async function watchCmd(argv: string[]): Promise<void> {
+  const [subId, ...dirs] = argv;
+  if (!subId) throw new Error("usage: padd watch <subproject> [<dir>...]");
+  const project = await registry.project(await registry.register(await findRepo(process.cwd())));
+  const sub = await project.setWatch(subId, dirs.map((d) => resolve(d)));
+  console.log(sub.watch ? `${project.id}/${sub.id} watches ${sub.watch.join(", ")}.` : `${project.id}/${sub.id} watches nothing.`);
+  console.log(`Commit ${PADD_DIR}/config.json to keep it. A running padd serve picks it up now.`);
+}
+
+async function session(argv: string[]): Promise<void> {
+  const [subId, id] = argv;
+  if (!subId) throw new Error("usage: padd session <subproject> [<id>]");
+  const project = await registry.project(await registry.register(await findRepo(process.cwd())));
+  const store = await project.store((await project.subproject(subId)).id);
+  if (id) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("a Claude Code session id looks like 48751088-e4c7-43f5-8db7-650b95022522");
+    await store.setSession(id);
+  }
+  const linked = await store.session();
+  console.log(linked ? `${project.id}/${subId} is linked to session ${linked}.` : `${project.id}/${subId} has no session yet.`);
 }
 
 async function link(argv: string[]): Promise<void> {
@@ -91,7 +198,16 @@ function lanAddresses(): string[] {
   return out.length > 0 ? out : ["localhost"];
 }
 
-const commands: Record<string, (argv: string[]) => Promise<void>> = { init, serve, link, board };
+const commands: Record<string, (argv: string[]) => Promise<void>> = {
+  init,
+  serve,
+  link,
+  board,
+  claude,
+  watch: watchCmd,
+  session,
+  mcp,
+};
 const [command, ...rest] = process.argv.slice(2);
 const run = command ? commands[command] : undefined;
 if (!run) {

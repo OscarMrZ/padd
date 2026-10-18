@@ -23,6 +23,11 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
       </button>
       <span class="status" role="status"></span>
+      <button class="talk" aria-label="Messages" aria-expanded="false" aria-controls="talk">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 18l-1.5 3.5L8 19.5h9a3 3 0 0 0 3-3v-8a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v8c0 .5.3 1 1 1.5z"/></svg>
+        <span class="badge" hidden></span>
+      </button>
+      <button class="send" aria-haspopup="dialog" aria-expanded="false" aria-controls="composer" disabled>Send to Claude</button>
     </header>
 
     <aside class="rail" aria-label="Tools">
@@ -78,6 +83,27 @@
   </div>
 
   <div class="nav" id="nav" role="dialog" aria-label="Projects" hidden></div>
+
+  <form class="composer" id="composer" role="dialog" aria-label="Send to Claude" hidden>
+    <p class="who"></p>
+    <textarea name="text" maxlength="4000" placeholder="Add a note (optional). Your marks go along with it."></textarea>
+    <div class="actions">
+      <button type="button" class="ghost" data-close="composer">Cancel</button>
+      <button class="primary">Send to Claude</button>
+    </div>
+  </form>
+
+  <aside class="talk-panel" id="talk" aria-label="Messages" hidden>
+    <header>
+      <h2>Messages</h2>
+      <button class="ghost" data-close="talk" aria-label="Close messages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <ol class="messages"></ol>
+  </aside>
+
+  <button class="reply-card" hidden></button>
   <div class="toast" role="alert" hidden></div>
 </body>
 </html>

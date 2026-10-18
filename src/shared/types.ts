@@ -26,6 +26,10 @@ export interface Board {
   image: string;
   author: Author;
   t: number;
+  /** SHA-1 of the image, so the same picture isn't added twice. */
+  hash?: string;
+  /** Where the image came from on this machine. */
+  source?: string;
 }
 
 /** A board with its current ink, as the UI loads it. */
@@ -40,6 +44,29 @@ export interface Subproject {
   title: string;
   /** What the work is about; a new session starts from it. */
   brief: string;
+  /** Repo-relative folders whose new or changed images become boards on their own. */
+  watch?: string[];
+}
+
+/** One entry in a subproject's conversation between the tablet and Claude. */
+export interface Message {
+  id: string;
+  author: Author;
+  text: string;
+  t: number;
+  /** The board it is about. */
+  board?: string;
+  /** For a Send: the board flattened with your marks, as Claude saw it. */
+  snapshot?: string;
+  /** For a Send: whether a Claude session has received it yet. */
+  delivered?: boolean;
+}
+
+/** Whether a Claude session is connected for a subproject right now. */
+export interface SessionState {
+  live: boolean;
+  /** The Claude Code session id linked to the subproject, if any. */
+  session?: string;
 }
 
 /** The committed `.padd/config.json` of a repo. */
@@ -56,6 +83,8 @@ export interface ProjectInfo extends ProjectConfig {
 /** A project as the tablet lists it: config plus how many boards each subproject holds. */
 export interface ProjectSummary extends ProjectInfo {
   boards: Record<string, number>;
+  /** Whether a Claude session is connected for each subproject. */
+  live: Record<string, boolean>;
 }
 
 /** Where an event happened. */
@@ -72,4 +101,8 @@ export type PaddEvent =
   | ({ type: "board"; board: Board } & Place)
   | ({ type: "stroke"; board: string; stroke: Stroke; origin?: string } & Place)
   | ({ type: "erase"; board: string; ids: string[]; origin?: string } & Place)
-  | { type: "subproject"; project: string; subproject: Subproject };
+  | { type: "subproject"; project: string; subproject: Subproject }
+  | ({ type: "message"; message: Message } & Place)
+  | ({ type: "session"; state: SessionState } & Place)
+  /** Claude asks the tablet to show this board. */
+  | ({ type: "focus"; board: string } & Place);

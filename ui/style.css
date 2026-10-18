@@ -150,6 +150,7 @@ svg {
 
 .status {
   margin-left: auto;
+  margin-right: 4px;
   font: 400 15px/1 var(--display);
   color: var(--dim);
   white-space: nowrap;
@@ -166,8 +167,45 @@ svg {
   vertical-align: 1px;
 }
 
-.status[data-state="live"] { --status: var(--ice); }
+.status[data-state="claude"] { --status: var(--lilac); color: var(--text); }
 .status[data-state="error"] { --status: var(--rose); }
+
+.talk {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 38px;
+  border-radius: 19px;
+  color: var(--dim);
+}
+
+.talk:hover, .talk[aria-expanded="true"] { background: var(--deck); color: var(--text); }
+
+.badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--lilac);
+  color: var(--space);
+  font: 600 12px/18px var(--body);
+}
+
+.send {
+  flex: none;
+  padding: 7px 18px;
+  border-radius: 999px;
+  background: var(--amber);
+  color: var(--space);
+  font: 600 17px/1.2 var(--display);
+  letter-spacing: 0.03em;
+}
+
+.send:disabled { opacity: 0.4; cursor: default; }
 
 .rail {
   grid-area: 2 / 1;
@@ -516,9 +554,43 @@ svg {
 
 .nav input:focus-visible, .nav textarea:focus-visible { outline: 2px solid var(--ice); outline-offset: 1px; }
 
-.nav .actions { display: flex; gap: 8px; justify-content: flex-end; }
+.nav .error { margin: 0; color: var(--rose); font-size: 14px; }
 
-.nav .primary {
+/* ---- Send composer and messages ---- */
+
+.composer {
+  position: fixed;
+  z-index: 10;
+  top: calc(max(10px, env(safe-area-inset-top)) + var(--bar) + 4px);
+  right: max(10px, env(safe-area-inset-right));
+  width: min(420px, calc(100vw - 20px));
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 6px 6px 6px 22px;
+  background: #1b2340;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.45);
+}
+
+.composer .who { margin: 0; color: var(--dim); font-size: 14px; }
+.composer .who strong { color: var(--text); font-weight: 500; }
+
+.composer textarea {
+  min-height: 96px;
+  padding: 10px;
+  border: 1px solid var(--hull);
+  border-radius: 6px;
+  background: var(--space);
+  color: var(--text);
+  font: 16px/1.4 var(--body);
+  resize: vertical;
+}
+
+.composer textarea:focus-visible { outline: 2px solid var(--ice); outline-offset: 1px; }
+
+.actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.primary {
   padding: 8px 18px;
   border-radius: 999px;
   background: var(--amber);
@@ -526,9 +598,97 @@ svg {
   font-weight: 500;
 }
 
-.nav .ghost { padding: 8px 14px; border-radius: 999px; color: var(--dim); }
+.ghost { padding: 8px 14px; border-radius: 999px; color: var(--dim); }
+.ghost:hover { color: var(--text); }
 
-.nav .error { margin: 0; color: var(--rose); font-size: 14px; }
+.talk-panel {
+  position: fixed;
+  z-index: 9;
+  top: calc(max(10px, env(safe-area-inset-top)) + var(--bar) + 4px);
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  width: min(400px, calc(100vw - 20px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px 6px 6px 22px;
+  background: #1b2340;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.45);
+}
+
+.talk-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 10px 6px 18px;
+}
+
+.talk-panel h2 { margin: 0; font: 400 22px/1.1 var(--display); }
+
+.messages {
+  flex: 1;
+  margin: 0;
+  padding: 6px 14px 16px;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.messages .none { color: var(--dim); padding: 4px; }
+
+.msg {
+  max-width: 88%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--deck);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg.me { align-self: flex-end; border-right: 3px solid var(--amber); }
+.msg.claude { align-self: flex-start; border-left: 3px solid var(--lilac); }
+
+.msg .meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.msg .on {
+  padding: 0;
+  color: var(--dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.msg .on:hover { color: var(--text); }
+.msg .waiting { color: var(--amber); }
+
+/* Claude's newest reply, when the messages are closed. */
+.reply-card {
+  position: fixed;
+  z-index: 8;
+  top: calc(max(10px, env(safe-area-inset-top)) + var(--bar) + 18px);
+  right: calc(max(10px, env(safe-area-inset-right)) + 14px);
+  max-width: min(380px, 70vw);
+  padding: 12px 16px;
+  border-radius: 6px;
+  border-left: 3px solid var(--lilac);
+  background: #1b2340;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+  text-align: left;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.reply-card:not([hidden]) { animation: arrive 300ms ease-out; }
 
 .toast {
   position: fixed;
@@ -543,12 +703,16 @@ svg {
   font-weight: 500;
 }
 
+.toast[data-kind="ok"] { background: var(--ice); }
+
 @media (max-width: 640px) {
   :root { --band: 62px; --bar: 46px; --elbow: 32px; }
   .tool, .act { width: 46px; }
   .place { font-size: 18px; }
   .strip { height: 82px; }
   .strip-info { display: none; }
+  .send { padding: 7px 12px; font-size: 15px; }
+  .status { display: none; }
   .thumb { height: 70px; }
 }
 

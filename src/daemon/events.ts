@@ -30,6 +30,11 @@ export class Events {
     res.on("close", () => this.clients.delete(res));
   }
 
+  /** How many tablet views are open. */
+  size(): number {
+    return this.clients.size;
+  }
+
   emit(event: PaddEvent): void {
     const chunk = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of this.clients) res.write(chunk);

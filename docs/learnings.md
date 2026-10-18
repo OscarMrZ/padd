@@ -38,6 +38,14 @@ section for an area before working in it.
 - **Rule:** Claude Code passes `CLAUDE_CODE_SESSION_ID` (equal to `--session-id`) and
   `CLAUDE_PROJECT_DIR` to MCP servers, and inherits custom variables like `PADD_SUBPROJECT`.
 
+### L-005 · Put `--dangerously-load-development-channels` before other arguments · 2026-10-18
+- **What happened:** `claude --session-id … --dangerously-load-development-channels server:padd "<prompt>"`
+  exited at once: the flag takes a list and swallowed the prompt as a second channel
+  ("entries must be tagged"). The session id was already linked, so the next start tried to
+  resume a conversation that never existed.
+- **Rule:** the flag goes first, then options, then the prompt (`src/cli.ts`, `claude`). Resume a
+  linked session only if `~/.claude/projects/*/<id>.jsonl` exists.
+
 ## Network
 
 ### L-004 · Open port 8788 in ufw, or the tablet can't connect · 2026-10-18

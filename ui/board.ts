@@ -15,6 +15,7 @@ const HIGHLIGHT_ALPHA = 0.35;
 const HIGHLIGHT_SCALE = 4;
 const ERASER_RADIUS = 14; // screen px
 const PALM_GUARD_MS = 600; // ignore touches this long after the pen was near
+const SNAPSHOT_MAX = 2400; // px on the long side of what Claude sees
 
 export type Mode = Tool | "eraser";
 type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[] };
@@ -28,6 +29,8 @@ export interface BoardView {
   remoteErase(ids: string[]): void;
   /** True while the pen or eraser is down: don't swap the board under it. */
   busy(): boolean;
+  /** The image with all its ink, as a PNG data URL: what a Send shows Claude. */
+  snapshot(): string | null;
   fit(): void;
   undo(): Promise<void>;
   setMode(mode: Mode): void;
@@ -390,6 +393,19 @@ export function createBoardView(stage: HTMLElement): BoardView {
       redraw();
     },
     busy: () => drawing !== null || erasing !== null,
+    snapshot() {
+      if (!state.image) return null;
+      const { naturalWidth: w, naturalHeight: h } = state.image;
+      const k = Math.min(1, SNAPSHOT_MAX / Math.max(w, h));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(w * k);
+      canvas.height = Math.round(h * k);
+      const ctx = canvas.getContext("2d")!;
+      ctx.scale(k, k);
+      ctx.drawImage(state.image, 0, 0);
+      for (const s of state.strokes) drawStroke(ctx, s);
+      return canvas.toDataURL("image/png");
+    },
     fit() {
       state.autoFit = true;
       fitView();

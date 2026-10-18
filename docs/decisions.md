@@ -60,3 +60,15 @@ wrong, say so and propose a new entry instead of quietly working around it.
 - **Why:** PADD listens on the LAN, and Send puts text in front of a Claude session: an open port
   would be a prompt-injection path.
 - **Rejected:** trusting the LAN; loopback-only plus a tunnel (the user wants direct LAN access).
+
+## D-007 · A re-rendered image is a new board · 2026-10-18
+- **Decision:** a watched folder's new or changed image becomes a new board; an image whose bytes
+  match an existing board (SHA-1) is skipped. `show` of a known image brings its board forward.
+- **Why:** ink belongs to the pixels it was drawn on; renders change fast and the history of
+  versions is what the filmstrip is for.
+- **Rejected:** replacing the image in place (old marks would sit on a new picture).
+
+## D-008 · Repos call `padd` from the PATH · 2026-10-18
+- **Decision:** `.mcp.json` runs `padd mcp`; `npm link` in this repo puts `padd` on the PATH.
+- **Why:** the committed `.mcp.json` stays free of machine paths.
+- **Rejected:** an absolute path to `src/cli.ts` (breaks on any other machine or checkout).

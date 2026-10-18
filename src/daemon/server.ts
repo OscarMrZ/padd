@@ -4,11 +4,12 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, extname, isAbsolute, join, normalize, sep } from "node:path";
-import type { Author, Point, ProjectSummary, Stroke } from "../shared/types.ts";
+import type { Author, Board, Place, Point, ProjectSummary, Stroke } from "../shared/types.ts";
+import { Agents } from "./agents.ts";
 import { COOKIE, presented, same } from "./auth.ts";
 import { Events } from "./events.ts";
-import { PADD_DIR, type Registry } from "./registry.ts";
-import { IMAGE_TYPES, Invalid, NotFound, newId, type Store } from "./store.ts";
+import { findRepo, PADD_DIR, slug, type Project, type Registry } from "./registry.ts";
+import { hashFile, IMAGE_TYPES, Invalid, NotFound, newId, type Store } from "./store.ts";
 import { thumbnail } from "./thumbs.ts";
 
 export interface Options {
@@ -23,6 +24,13 @@ export interface Options {
 export interface PaddServer {
   server: Server;
   events: Events;
+  agents: Agents;
+}
+
+interface Ctx {
+  opts: Options;
+  events: Events;
+  agents: Agents;
 }
 
 const TYPES: Record<string, string> = {
@@ -34,26 +42,37 @@ const TYPES: Record<string, string> = {
 };
 
 const MAX_BODY = 4 * 1024 * 1024;
+const MAX_SEND = 40 * 1024 * 1024; // a Send carries a full-size PNG snapshot
+const MAX_MESSAGE = 4000;
 const IMMUTABLE = "private, max-age=31536000, immutable";
 
 export class Forbidden extends Error {}
+export class Conflict extends Error {}
 
 export function createPaddServer(opts: Options): PaddServer {
   const events = new Events();
+  const agents = new Agents(events);
+  const ctx: Ctx = { opts, events, agents };
   const server = createServer((req, res) => {
-    handle(opts, events, req, res).catch((e: unknown) => {
+    handle(ctx, req, res).catch((e: unknown) => {
+      if (res.headersSent) return void res.end();
       if (e instanceof NotFound) return send(res, 404, { error: e.message });
       if (e instanceof Invalid) return send(res, 400, { error: e.message });
       if (e instanceof Forbidden) return send(res, 403, { error: e.message });
+      if (e instanceof Conflict) return send(res, 409, { error: e.message });
       console.error(e);
       send(res, 500, { error: "internal error" });
     });
   });
-  server.on("close", () => events.close());
-  return { server, events };
+  server.on("close", () => {
+    agents.closeAll();
+    events.close();
+  });
+  return { server, events, agents };
 }
 
-async function handle(opts: Options, events: Events, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { opts, events } = ctx;
   const url = new URL(req.url ?? "/", "http://padd");
 
   // The printed link: trade the query token for a cookie and drop it from the address bar.
@@ -82,7 +101,8 @@ async function handle(opts: Options, events: Events, req: IncomingMessage, res: 
   if (method === "GET" && path === "/style.css") return file(res, join(opts.uiDir, "style.css"));
   if (method === "GET" && path.startsWith("/js/")) return file(res, inside(opts.jsDir, path.slice(4)));
   if (method === "GET" && path === "/api/events") return events.attach(res);
-  if (method === "GET" && path === "/api/projects") return send(res, 200, await summaries(opts.registry));
+  if (method === "GET" && path === "/api/projects") return send(res, 200, await summaries(ctx));
+  if (path.startsWith("/api/agent/")) return agentRoute(ctx, req, res, url);
 
   // /api/p/<project>/... : everything inside one project.
   const seg = path.split("/").slice(1).map(decodeURIComponent);
@@ -98,8 +118,19 @@ async function handle(opts: Options, events: Events, req: IncomingMessage, res: 
     return send(res, 201, subproject);
   }
 
-  // /api/p/<project>/<sub>/boards[/<board>[/<part>]]
+  // /api/p/<project>/<sub>/messages|session|send
   const [sub, boards, boardId, part, ...extra] = rest;
+  if (sub && rest.length === 2) {
+    const store = await project.store(sub);
+    const place = { project: project.id, sub };
+    if (method === "GET" && boards === "messages") return send(res, 200, await store.messages());
+    if (method === "GET" && boards === "session") {
+      return send(res, 200, { live: ctx.agents.liveFor(place) !== undefined, session: await store.session() });
+    }
+    if (method === "POST" && boards === "send") return sendToClaude(ctx, req, res, place, store);
+  }
+
+  // /api/p/<project>/<sub>/boards[/<board>[/<part>]]
   if (!sub || boards !== "boards" || extra.length > 0) return send(res, 404, { error: `no route ${method} ${path}` });
   const store = await project.store(sub);
   const place = { project: project.id, sub };
@@ -139,14 +170,185 @@ async function handle(opts: Options, events: Events, req: IncomingMessage, res: 
   send(res, 404, { error: `no route ${method} ${path}` });
 }
 
-async function summaries(registry: Registry): Promise<ProjectSummary[]> {
+async function summaries(ctx: Ctx): Promise<ProjectSummary[]> {
   return Promise.all(
-    (await registry.projects()).map(async (p) => {
+    (await ctx.opts.registry.projects()).map(async (p) => {
       const boards: Record<string, number> = {};
-      for (const s of p.subprojects) boards[s.id] = await countBoards(join(p.path, PADD_DIR, "data", s.id));
-      return { ...p, boards };
+      const live: Record<string, boolean> = {};
+      for (const s of p.subprojects) {
+        boards[s.id] = await countBoards(join(p.path, PADD_DIR, "data", s.id));
+        live[s.id] = ctx.agents.liveFor({ project: p.id, sub: s.id }) !== undefined;
+      }
+      return { ...p, boards, live };
     }),
   );
+}
+
+/** The tablet's Send: save what Claude will see, log it, and hand it to the linked session. */
+async function sendToClaude(ctx: Ctx, req: IncomingMessage, res: ServerResponse, place: Place, store: Store): Promise<void> {
+  const { board, text, snapshot } = (await body(req, MAX_SEND)) as { board?: unknown; text?: unknown; snapshot?: unknown };
+  const message = typeof text === "string" ? text.trim().slice(0, MAX_MESSAGE) : "";
+  const prefix = "data:image/png;base64,";
+  if (typeof snapshot !== "string" || !snapshot.startsWith(prefix)) throw new Invalid("snapshot must be a PNG data URL");
+  const png = Buffer.from(snapshot.slice(prefix.length), "base64");
+  if (png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Invalid("snapshot is not a PNG");
+  let boardId: string | undefined;
+  if (typeof board === "string") boardId = (await store.board(board)).id;
+  const saved = await store.addMessage({
+    author: "me",
+    text: message,
+    board: boardId,
+    snapshot: await store.saveSnapshot(png),
+    delivered: false,
+  });
+  ctx.events.emit({ type: "message", ...place, message: saved });
+  const delivered = await ctx.agents.deliver(place, saved, store);
+  send(res, 201, { message: { ...saved, delivered }, delivered });
+}
+
+// ---------- the agent side: padd mcp, running inside a Claude Code session ----------
+
+const SESSION = /^[0-9a-zA-Z-]{8,64}$/;
+
+async function agentRoute(ctx: Ctx, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  // Agents read and write files on this machine by path: never from the network.
+  if (!isLoopback(req)) throw new Forbidden("only Claude sessions on this computer use /api/agent");
+  const { registry } = ctx.opts;
+  const method = req.method ?? "GET";
+  const route = url.pathname.slice("/api/agent/".length);
+
+  if (method === "GET" && route === "stream") {
+    const session = url.searchParams.get("session") ?? "";
+    if (!SESSION.test(session)) throw new Invalid("session must be a Claude Code session id");
+    const project = await projectAt(registry, url.searchParams.get("repo"));
+    ctx.agents.attach(session, res, project?.id);
+    let place: Place | undefined;
+    if (project) {
+      const wanted = url.searchParams.get("sub");
+      const sub = wanted ? await findSub(project, wanted) : await linkedSub(project, session);
+      if (sub) {
+        place = { project: project.id, sub };
+        await ctx.agents.link(session, place, await project.store(sub));
+      }
+    }
+    return ctx.agents.say(session, { type: "hello", project: project?.id, place });
+  }
+
+  if (method === "GET" && route === "status") {
+    const session = url.searchParams.get("session") ?? "";
+    return send(res, 200, await status(ctx, session));
+  }
+
+  if (method !== "POST") return send(res, 404, { error: `no route ${method} ${url.pathname}` });
+  const b = (await body(req)) as Record<string, unknown>;
+  const session = typeof b.session === "string" ? b.session : "";
+  if (!ctx.agents.has(session)) throw new Conflict("this session isn't connected to padd");
+
+  if (route === "link") {
+    const projectId = ctx.agents.projectOf(session);
+    if (!projectId) throw new Conflict("this session's folder isn't a padd project; run padd init there");
+    const project = await registry.project(projectId);
+    if (typeof b.subproject !== "string" || !b.subproject.trim()) throw new Invalid("subproject must be a name");
+    let sub = await findSub(project, b.subproject);
+    if (!sub) {
+      const created = await project.addSubproject(b.subproject, typeof b.brief === "string" ? b.brief : "");
+      ctx.events.emit({ type: "subproject", project: project.id, subproject: created });
+      sub = created.id;
+    }
+    const place = { project: project.id, sub };
+    await ctx.agents.link(session, place, await project.store(sub));
+    return send(res, 200, { place });
+  }
+
+  const place = ctx.agents.placeOf(session);
+  if (!place) throw new Conflict("link this session to a subproject first (the link tool)");
+  const store = await (await registry.project(place.project)).store(place.sub);
+
+  if (route === "reply") {
+    if (typeof b.text !== "string" || !b.text.trim()) throw new Invalid("text must not be empty");
+    const board = typeof b.board === "string" ? (await store.board(b.board)).id : undefined;
+    const message = await store.addMessage({ author: "claude", text: b.text.trim().slice(0, MAX_MESSAGE), board });
+    ctx.events.emit({ type: "message", ...place, message });
+    return send(res, 201, message);
+  }
+
+  if (route === "show") {
+    const paths = b.paths;
+    if (!Array.isArray(paths) || paths.length === 0 || paths.length > 50) throw new Invalid("paths must list 1 to 50 images");
+    const shown: Board[] = [];
+    const byHash = new Map((await store.boards()).map((x) => [x.hash, x]));
+    for (const p of paths) {
+      if (typeof p !== "string" || !isAbsolute(p)) throw new Invalid("each path must be an absolute file path");
+      // An image already on the tablet is brought forward instead of copied again.
+      let board = byHash.get(await hashOrThrow(p));
+      if (!board) {
+        const title = paths.length === 1 && typeof b.title === "string" && b.title.trim() ? b.title.trim().slice(0, 80) : basename(p, extname(p));
+        board = await store.addBoard(p, title, "claude");
+        byHash.set(board.hash, board);
+        ctx.events.emit({ type: "board", ...place, board });
+      }
+      shown.push(board);
+    }
+    ctx.events.emit({ type: "focus", ...place, board: shown[0]!.id });
+    return send(res, 200, shown);
+  }
+
+  send(res, 404, { error: `no route ${method} ${url.pathname}` });
+}
+
+async function hashOrThrow(path: string): Promise<string> {
+  try {
+    return await hashFile(path);
+  } catch {
+    throw new Invalid(`can't read ${path}`);
+  }
+}
+
+async function projectAt(registry: Registry, dir: string | null): Promise<Project | undefined> {
+  if (!dir || !isAbsolute(dir)) return undefined;
+  try {
+    return await registry.project(await registry.register(await findRepo(dir)));
+  } catch {
+    return undefined; // not a padd project
+  }
+}
+
+/** A subproject by id or by name. */
+async function findSub(project: Project, name: string): Promise<string | undefined> {
+  const subs = (await project.config()).subprojects;
+  return subs.find((s) => s.id === name || s.id === slug(name))?.id;
+}
+
+/** The subproject this session was linked to before, if any. */
+async function linkedSub(project: Project, session: string): Promise<string | undefined> {
+  for (const s of (await project.config()).subprojects) {
+    if ((await (await project.store(s.id)).session()) === session) return s.id;
+  }
+  return undefined;
+}
+
+async function status(ctx: Ctx, session: string): Promise<unknown> {
+  const projectId = ctx.agents.projectOf(session);
+  if (!projectId) return { connected: ctx.agents.has(session), project: null };
+  const project = await ctx.opts.registry.project(projectId);
+  const config = await project.config();
+  const place = ctx.agents.placeOf(session);
+  const out: Record<string, unknown> = {
+    connected: true,
+    project: project.id,
+    subprojects: config.subprojects.map((s) => ({ id: s.id, title: s.title, brief: s.brief, watch: s.watch ?? [] })),
+    linked: place?.sub ?? null,
+    tablets: ctx.events.size(),
+  };
+  if (place) {
+    const store = await project.store(place.sub);
+    const boards = await store.boards();
+    out.boards = boards.length;
+    out.latest = await Promise.all(
+      boards.slice(-10).reverse().map(async (x) => ({ id: x.id, title: x.title, author: x.author, image: await store.imagePath(x.id) })),
+    );
+  }
+  return out;
 }
 
 async function countBoards(dir: string): Promise<number> {
@@ -187,12 +389,12 @@ function origin(req: IncomingMessage): string | undefined {
   return typeof id === "string" && /^[a-z0-9]{1,32}$/.test(id) ? id : undefined;
 }
 
-async function body(req: IncomingMessage): Promise<unknown> {
+async function body(req: IncomingMessage, max = MAX_BODY): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_BODY) throw new Invalid("body too large");
+    if (size > max) throw new Invalid("body too large");
     chunks.push(chunk);
   }
   try {

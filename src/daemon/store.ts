@@ -1,15 +1,19 @@
-// Boards on disk, one folder per board:
-//   <dir>/boards/<id>/board.json   the Board
-//   <dir>/boards/<id>/image.<ext>  the image
-//   <dir>/boards/<id>/ink.jsonl    append-only log of ink operations
-// The log is replayed on read, so a crash loses at most the line being written.
+// One subproject's data on disk (<repo>/.padd/data/<sub>/):
+//   boards/<id>/board.json   the Board
+//   boards/<id>/image.<ext>  the image
+//   boards/<id>/ink.jsonl    append-only log of ink operations
+//   messages.jsonl           append-only log of the conversation with Claude
+//   sends/<id>.png           what each Send showed Claude
+//   session.json             the Claude Code session linked to the subproject
+// Logs are replayed on read, so a crash loses at most the line being written.
 
-import { randomBytes } from "node:crypto";
-import { appendFile, copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { appendFile, copyFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
-import type { Author, Board, BoardInk, Stroke } from "../shared/types.ts";
+import type { Author, Board, BoardInk, Message, Stroke } from "../shared/types.ts";
 
 type InkOp = { op: "add"; stroke: Stroke } | { op: "erase"; ids: string[]; t: number };
+type MessageOp = { op: "add"; message: Message } | { op: "delivered"; ids: string[] };
 
 export const IMAGE_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -46,13 +50,33 @@ export class Store {
   async addBoard(imagePath: string, title: string, author: Author): Promise<Board> {
     const ext = extname(imagePath).toLowerCase();
     if (!IMAGE_TYPES[ext]) throw new Invalid(`unsupported image type ${ext || "(none)"}`);
-    const board: Board = { id: newId(), title, image: `image${ext}`, author, t: Date.now() };
+    let hash: string;
+    try {
+      hash = await hashFile(imagePath);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Invalid(`no such file ${imagePath}`);
+      throw e;
+    }
+    const board: Board = { id: newId(), title, image: `image${ext}`, author, t: Date.now(), hash, source: imagePath };
     const dir = this.boardDir(board.id);
     await mkdir(dir, { recursive: true });
     await copyFile(imagePath, join(dir, board.image));
     await writeFile(join(dir, "ink.jsonl"), "");
     await writeFile(join(dir, "board.json"), JSON.stringify(board, null, 2));
     return board;
+  }
+
+  /** Hashes of every board's image, filling in any that older boards lack. */
+  async hashes(): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const board of await this.boards()) {
+      if (!board.hash) {
+        board.hash = await hashFile(join(this.boardDir(board.id), board.image));
+        await writeFile(join(this.boardDir(board.id), "board.json"), JSON.stringify(board, null, 2));
+      }
+      out.add(board.hash);
+    }
+    return out;
   }
 
   /** All boards, oldest first. */
@@ -85,16 +109,8 @@ export class Store {
   /** The board with its strokes as they stand now (adds minus erases). */
   async ink(id: string): Promise<BoardInk> {
     const board = await this.board(id);
-    const log = await readFile(join(this.boardDir(id), "ink.jsonl"), "utf8");
     const strokes = new Map<string, Stroke>();
-    for (const line of log.split("\n")) {
-      if (!line) continue;
-      let op: InkOp;
-      try {
-        op = JSON.parse(line) as InkOp;
-      } catch {
-        continue; // a torn last line from a crash
-      }
+    for (const op of await readLog<InkOp>(join(this.boardDir(id), "ink.jsonl"))) {
       if (op.op === "add") strokes.set(op.stroke.id, op.stroke);
       else for (const sid of op.ids) strokes.delete(sid);
     }
@@ -114,6 +130,86 @@ export class Store {
   private async append(id: string, op: InkOp): Promise<void> {
     await appendFile(join(this.boardDir(id), "ink.jsonl"), JSON.stringify(op) + "\n");
   }
+
+  // ---------- conversation ----------
+
+  /** The conversation, oldest first. */
+  async messages(): Promise<Message[]> {
+    const messages = new Map<string, Message>();
+    for (const op of await readLog<MessageOp>(join(this.dir, "messages.jsonl"))) {
+      if (op.op === "add") messages.set(op.message.id, op.message);
+      else for (const id of op.ids) {
+        const m = messages.get(id);
+        if (m) m.delivered = true;
+      }
+    }
+    return [...messages.values()];
+  }
+
+  async addMessage(m: Omit<Message, "id" | "t">): Promise<Message> {
+    const message: Message = { id: newId(), t: Date.now(), ...m };
+    await this.appendMessage({ op: "add", message });
+    return message;
+  }
+
+  async markDelivered(ids: string[]): Promise<void> {
+    if (ids.length > 0) await this.appendMessage({ op: "delivered", ids });
+  }
+
+  private async appendMessage(op: MessageOp): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    await appendFile(join(this.dir, "messages.jsonl"), JSON.stringify(op) + "\n");
+  }
+
+  /** Saves what a Send showed Claude; returns the file's absolute path. */
+  async saveSnapshot(png: Buffer): Promise<string> {
+    const dir = join(this.dir, "sends");
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, `${newId()}.png`);
+    await writeFile(path, png);
+    return path;
+  }
+
+  // ---------- linked session ----------
+
+  async session(): Promise<string | undefined> {
+    try {
+      return (JSON.parse(await readFile(join(this.dir, "session.json"), "utf8")) as { id?: string }).id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async setSession(id: string): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    const path = join(this.dir, "session.json");
+    await writeFile(`${path}.tmp`, JSON.stringify({ id, linked: Date.now() }) + "\n");
+    await rename(`${path}.tmp`, path);
+  }
+}
+
+export async function hashFile(path: string): Promise<string> {
+  return createHash("sha1").update(await readFile(path)).digest("hex");
+}
+
+async function readLog<T>(path: string): Promise<T[]> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const out: T[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    try {
+      out.push(JSON.parse(line) as T);
+    } catch {
+      // a torn last line from a crash
+    }
+  }
+  return out;
 }
 
 export class NotFound extends Error {}

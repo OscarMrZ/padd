@@ -24,9 +24,11 @@ export function enc(...parts: string[]): string {
 
 let toastTimer = 0;
 
-export function toast(text: string): void {
+/** A one-line message at the bottom: a problem (default) or a confirmation. */
+export function toast(text: string, kind: "error" | "ok" = "error"): void {
   const el = document.querySelector<HTMLElement>(".toast")!;
   el.textContent = text;
+  el.dataset.kind = kind;
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => (el.hidden = true), 5000);

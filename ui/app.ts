@@ -1,7 +1,7 @@
 // The tablet UI shell: which project and subproject you're in, the filmstrip of its images,
 // and live updates from padd serve. Drawing itself lives in board.ts.
 
-import type { Board, BoardInk, PaddEvent, ProjectSummary, Subproject } from "../src/shared/types.ts";
+import type { Board, BoardInk, Message, PaddEvent, ProjectSummary, SessionState, Subproject } from "../src/shared/types.ts";
 import { api, clientId, enc, remember, toast } from "./api.ts";
 import { COLORS, createBoardView, type Mode } from "./board.ts";
 
@@ -18,6 +18,11 @@ const state = {
   board: null as Board | null,
   seen: new Set<string>(),
   follow: remember.get("padd.follow") !== "off",
+  /** The subproject's conversation with Claude, oldest first. */
+  messages: [] as Message[],
+  session: { live: false } as SessionState,
+  unread: 0,
+  online: false,
   /** Bumped on every navigation, so a slow load can't land on top of a newer one. */
   seq: 0,
 };
@@ -39,9 +44,16 @@ async function go(projectId: string, subId: string, boardId?: string): Promise<v
     return openNav();
   }
   const seq = ++state.seq;
-  const boards = await api<Board[]>(`/api/p/${enc(project.id, sub.id)}/boards`);
+  const at = `/api/p/${enc(project.id, sub.id)}`;
+  const [boards, messages, session] = await Promise.all([
+    api<Board[]>(`${at}/boards`),
+    api<Message[]>(`${at}/messages`),
+    api<SessionState>(`${at}/session`),
+  ]);
   if (seq !== state.seq) return;
-  Object.assign(state, { project, sub, boards: boards.reverse(), board: null });
+  Object.assign(state, { project, sub, boards: boards.reverse(), board: null, messages, session, unread: 0 });
+  renderPresence();
+  renderMessages();
   closeNav();
   // What is already there when you arrive counts as seen; only arrivals get the dot.
   state.seen = new Set(boards.map((b) => b.id));
@@ -51,6 +63,7 @@ async function go(projectId: string, subId: string, boardId?: string): Promise<v
   if (pick) await openBoard(pick.id);
   else {
     view.close();
+    $<HTMLButtonElement>(".send").disabled = true;
     renderStrip();
     syncHash();
   }
@@ -66,6 +79,7 @@ async function openBoard(id: string): Promise<void> {
   state.board = data.board;
   state.seen.add(id);
   view.open(`${base()}/${enc(id)}`, data, image);
+  $<HTMLButtonElement>(".send").disabled = false;
   renderStrip();
   syncHash();
 }
@@ -170,7 +184,8 @@ function renderNav(adding?: string): void {
         const n = p.boards[s.id] ?? 0;
         const b = el("button", { "data-project": p.id, "data-sub": s.id });
         b.setAttribute("aria-current", String(p.id === state.project?.id && s.id === state.sub?.id));
-        b.append(el("span", { class: "title" }, s.title), el("span", { class: "n" }, n === 1 ? "1 image" : `${n} images`));
+        const count = n === 1 ? "1 image" : `${n} images`;
+        b.append(el("span", { class: "title" }, s.title), el("span", { class: "n" }, p.live[s.id] ? `${count}, Claude here` : count));
         if (s.brief) b.append(el("span", { class: "brief" }, s.brief));
         list.append(el("li", {}, b));
       }
@@ -223,13 +238,15 @@ function listen(): void {
   const source = new EventSource("/api/events");
   let dropped = false;
   source.onopen = () => {
-    setStatus("Connected", "live");
+    state.online = true;
+    renderPresence();
     // Catch up on whatever happened while the stream was down.
     if (dropped) void resync();
     dropped = false;
   };
   source.onerror = () => {
     dropped = true;
+    state.online = false;
     setStatus("Reconnecting", "error");
   };
   source.onmessage = (m) => onEvent(JSON.parse(m.data as string) as PaddEvent);
@@ -243,6 +260,24 @@ function onEvent(e: PaddEvent): void {
     return;
   }
   const here = e.project === state.project?.id && e.sub === state.sub?.id;
+  if (e.type === "session") {
+    const p = state.projects.find((x) => x.id === e.project);
+    if (p) p.live[e.sub] = e.state.live;
+    if (here) {
+      state.session = e.state;
+      renderPresence();
+    }
+    return;
+  }
+  if (e.type === "message") {
+    if (here) receive(e.message);
+    return;
+  }
+  if (e.type === "focus") {
+    // Claude asked for this board: show it, unless the pen is down.
+    if (here && !view.busy() && state.boards.some((b) => b.id === e.board)) void openBoard(e.board);
+    return;
+  }
   if (e.type === "board") {
     const p = state.projects.find((x) => x.id === e.project);
     if (p) p.boards[e.sub] = (p.boards[e.sub] ?? 0) + 1;
@@ -263,10 +298,123 @@ async function resync(): Promise<void> {
   if (state.project && state.sub) await go(state.project.id, state.sub.id, state.board?.id);
 }
 
-function setStatus(text: string, s: "live" | "error"): void {
+function renderPresence(): void {
+  if (!state.online) return;
+  if (state.session.live) setStatus("Claude here", "claude");
+  else setStatus("Claude away", "idle");
+}
+
+function setStatus(text: string, s: "claude" | "idle" | "error"): void {
   const status = $<HTMLElement>(".status");
   status.textContent = text;
   status.dataset.state = s;
+}
+
+// ---------- talking to Claude ----------
+
+const composer = $<HTMLFormElement>(".composer");
+const talk = $<HTMLElement>(".talk-panel");
+const talkBtn = $<HTMLButtonElement>(".talk");
+const replyCard = $<HTMLButtonElement>(".reply-card");
+let replyTimer = 0;
+
+function openComposer(): void {
+  if (!state.board || !state.sub) return;
+  const who = composer.querySelector(".who")!;
+  who.replaceChildren(
+    ...(state.session.live
+      ? ["To Claude in ", el("strong", {}, state.sub.title), ", with this image and your marks."]
+      : ["No Claude session for ", el("strong", {}, state.sub.title), " is connected. Your Send waits and goes out as soon as one starts."]),
+  );
+  composer.hidden = false;
+  $(".send").setAttribute("aria-expanded", "true");
+  composer.querySelector("textarea")!.focus();
+}
+
+function closeComposer(): void {
+  composer.hidden = true;
+  $(".send").setAttribute("aria-expanded", "false");
+}
+
+composer.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const snapshot = view.snapshot();
+  if (!snapshot || !state.board) return;
+  const textarea = composer.querySelector("textarea")!;
+  const button = composer.querySelector<HTMLButtonElement>(".primary")!;
+  button.disabled = true;
+  try {
+    const { message, delivered } = await api<{ message: Message; delivered: boolean }>(
+      `/api/p/${enc(state.project!.id, state.sub!.id)}/send`,
+      { board: state.board.id, text: textarea.value, snapshot },
+    );
+    receive(message);
+    textarea.value = "";
+    closeComposer();
+    toast(delivered ? "Sent to Claude" : "Saved. It goes to Claude when a session connects.", "ok");
+  } catch (err) {
+    toast(`Not sent: ${(err as Error).message}`);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function openTalk(): void {
+  talk.hidden = false;
+  talkBtn.setAttribute("aria-expanded", "true");
+  state.unread = 0;
+  replyCard.hidden = true;
+  renderMessages();
+}
+
+function closeTalk(): void {
+  talk.hidden = true;
+  talkBtn.setAttribute("aria-expanded", "false");
+}
+
+/** A message arrived or changed (e.g. a Send was delivered). */
+function receive(m: Message): void {
+  const i = state.messages.findIndex((x) => x.id === m.id);
+  if (i >= 0) state.messages[i] = m;
+  else {
+    state.messages.push(m);
+    if (m.author === "claude" && talk.hidden) {
+      state.unread++;
+      replyCard.textContent = m.text;
+      replyCard.hidden = false;
+      clearTimeout(replyTimer);
+      replyTimer = window.setTimeout(() => (replyCard.hidden = true), 15_000);
+    }
+  }
+  renderMessages();
+}
+
+function renderMessages(): void {
+  const badge = $<HTMLElement>(".badge");
+  badge.hidden = state.unread === 0;
+  badge.textContent = String(state.unread);
+  if (talk.hidden) return;
+  const list = $<HTMLElement>(".messages");
+  if (state.messages.length === 0) {
+    list.replaceChildren(el("li", { class: "none" }, "Nothing yet. Mark up an image and press Send to Claude."));
+    return;
+  }
+  list.replaceChildren(
+    ...state.messages.map((m) => {
+      const li = el("li", { class: `msg ${m.author}` }, m.text || (m.author === "me" ? "(just the marks)" : ""));
+      const meta = el("div", { class: "meta" }, time(m.t));
+      const board = m.board ? state.boards.find((b) => b.id === m.board) : undefined;
+      if (board) meta.append(el("button", { class: "on", "data-board": board.id }, board.title));
+      if (m.author === "me" && m.delivered === false) meta.append(el("span", { class: "waiting" }, "waiting for Claude"));
+      li.append(meta);
+      return li;
+    }),
+  );
+  list.lastElementChild?.scrollIntoView({ block: "end" });
+}
+
+function time(t: number): string {
+  return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 // ---------- controls ----------
@@ -303,10 +451,15 @@ for (const b of document.querySelectorAll<HTMLButtonElement>(".size")) b.setAttr
 document.addEventListener("click", (e) => {
   const target = e.target as Element;
   if (!nav.hidden && !nav.contains(target) && !placeBtn.contains(target)) closeNav();
+  if (!composer.hidden && !composer.contains(target) && !target.closest(".send")) closeComposer();
   const b = target.closest<HTMLButtonElement>("button");
   if (!b) return;
   const d = b.dataset;
   if (b === placeBtn) return nav.hidden ? openNav() : closeNav();
+  if (b.classList.contains("send")) return composer.hidden ? openComposer() : closeComposer();
+  if (b === talkBtn || b === replyCard) return talk.hidden ? openTalk() : closeTalk();
+  if (d.close === "composer") return closeComposer();
+  if (d.close === "talk") return closeTalk();
   if (d.tool) setMode(d.tool as Mode);
   else if (d.color) setColor(d.color);
   else if (d.size) setSize(Number(d.size));
@@ -332,7 +485,11 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "z") {
     e.preventDefault();
     void view.undo();
-  } else if (e.key === "Escape") closeNav();
+  } else if (e.key === "Escape") {
+    closeNav();
+    closeComposer();
+    closeTalk();
+  }
   else if (e.key === "ArrowLeft") step(1); // older
   else if (e.key === "ArrowRight") step(-1); // newer
 });

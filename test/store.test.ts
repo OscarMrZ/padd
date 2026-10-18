@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -51,4 +51,32 @@ test("unknown boards, bad ids and odd images are refused", async () => {
   await assert.rejects(store.ink("zzzzzzzzzzzz"), NotFound);
   await assert.rejects(store.ink("../../etc"), NotFound);
   await assert.rejects(store.addBoard(image.replace(".png", ".gif"), "x", "me"), Invalid);
+});
+
+test("messages log adds and deliveries", async () => {
+  const { store } = await fixture();
+  assert.deepEqual(await store.messages(), []);
+  const a = await store.addMessage({ author: "me", text: "rounder head", snapshot: "/x.png", delivered: false });
+  await store.addMessage({ author: "claude", text: "on it" });
+  await store.markDelivered([a.id]);
+  const all = await store.messages();
+  assert.deepEqual(all.map((m) => [m.author, m.text, m.delivered]), [["me", "rounder head", true], ["claude", "on it", undefined]]);
+});
+
+test("the linked session survives a restart", async () => {
+  const { store } = await fixture();
+  assert.equal(await store.session(), undefined);
+  await store.setSession("48751088-e4c7-43f5-8db7-650b95022522");
+  assert.equal(await new Store(store.dir).session(), "48751088-e4c7-43f5-8db7-650b95022522");
+});
+
+test("hashes cover old boards too", async () => {
+  const { store, image } = await fixture();
+  const b = await store.addBoard(image, "front", "me");
+  // A board from before hashes existed:
+  const path = join(store.dir, "boards", b.id, "board.json");
+  const { hash, ...old } = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify(old));
+  assert.deepEqual([...(await store.hashes())], [hash]);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).hash, hash);
 });

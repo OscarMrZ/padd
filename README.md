@@ -1,8 +1,8 @@
 # PADD
 
 Draw feedback for Claude Code sessions from a tablet. Claude shows you images; you mark them up with
-the pen and write notes; **Send** hands it all to the session working on it. Drawing never prompts
-Claude, only Send does.
+the pen; **Send to Claude** hands the marked-up image and your note to the session working on it,
+and its reply comes back to the tablet. Drawing never prompts Claude, only Send does.
 
 Runs on your computer and serves the tablet over the LAN. Status and next steps:
 [`docs/roadmap.md`](docs/roadmap.md).
@@ -12,19 +12,24 @@ Runs on your computer and serves the tablet over the LAN. Status and next steps:
 Needs Node ≥ 26.
 
 ```sh
-npm install && npm run build      # dependencies, then compile the tablet UI
-node src/cli.ts serve             # serve on :8788 (leave it running)
-node src/cli.ts link              # print the tablet links (they carry the access token)
-
-cd ~/Projects/tofu                # in any repo:
-node ~/Projects/padd/src/cli.ts init                        # make it a padd project
-node ~/Projects/padd/src/cli.ts board mood renders/*.png    # show images in subproject "mood"
-
-npm test && npm run check         # tests, types
+npm install && npm run build && npm link   # dependencies, tablet UI, `padd` on your PATH
+padd serve                                 # run PADD on :8788 (leave it running)
+padd link                                  # the tablet links (they carry the access token)
+npm test && npm run check                  # tests, types
 ```
 
-`npm link` puts `padd` on your PATH instead of `node …/src/cli.ts`. Subprojects are created on the
-tablet (the project name in the top bar).
+In a repo:
+
+```sh
+padd init                     # make it a project: .padd/config.json, .mcp.json (commit both)
+padd claude mood              # start or resume the "mood" session, wired to the tablet
+padd watch mood mood/renders  # images saved there show up on the tablet on their own
+padd board mood shot.png      # show one image by hand
+```
+
+Subprojects are created on the tablet (tap the project name in the top bar) or by Claude's
+`link` tool. A session gets the `padd` tools in any case (`show`, `reply`, `link`, `status`); it
+receives your Sends only when started with `padd claude` (Claude Code needs its channel flag).
 
 If the tablet can't connect, open the port to your LAN (ufw example):
 `sudo ufw allow from 192.168.1.0/24 to any port 8788 proto tcp comment padd`.
