@@ -2,10 +2,14 @@
 // each repo's .padd/config.json (committed) names the project and its subprojects, and
 // .padd/data/ (gitignored) holds the boards.
 
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { promisify } from "node:util";
 import type { ProjectConfig, ProjectInfo, Subproject } from "../shared/types.ts";
 import { Store, Invalid, NotFound } from "./store.ts";
+
+const run = promisify(execFile);
 
 export const PADD_DIR = ".padd";
 const SLUG = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -170,7 +174,23 @@ export async function installMcp(repo: string): Promise<string[]> {
     await writeJson(settingsPath, settings);
     changed.push(".claude/settings.local.json");
   }
+  await keepOutOfGit(repo, ".claude/settings.local.json");
   return changed;
+}
+
+/** Makes git ignore a personal file in this clone only (.git/info/exclude), unless it already does. */
+async function keepOutOfGit(repo: string, file: string): Promise<void> {
+  const git = (...args: string[]) => run("git", ["-C", repo, ...args]);
+  try {
+    await git("check-ignore", "-q", file);
+    return; // ignored already
+  } catch (e) {
+    if ((e as { code?: unknown }).code !== 1) return; // not a git repo, or no git
+  }
+  const exclude = resolve(repo, (await git("rev-parse", "--git-path", "info/exclude")).stdout.trim());
+  await mkdir(dirname(exclude), { recursive: true });
+  const current = await readFile(exclude, "utf8").catch(() => "");
+  await appendFile(exclude, `${current === "" || current.endsWith("\n") ? "" : "\n"}/${file}\n`);
 }
 
 async function readJson<T>(path: string, fallback: T): Promise<T> {

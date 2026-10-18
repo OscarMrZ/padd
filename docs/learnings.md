@@ -72,6 +72,13 @@ section for an area before working in it.
   Don't reach for `KillMode=process`: leftover processes in a service's cgroup are what systemd
   warns about.
 
+### L-009 · Test `padd init` against a clean git, without your global ignores · 2026-10-18
+- **What happened:** `padd init` writes `.claude/settings.local.json`; on the author's machine a
+  global gitignore hid it, but in a clean setup `git add .` would have committed it.
+- **Rule:** padd adds the file to the clone's `.git/info/exclude`. Tests that check git run with
+  `GIT_CONFIG_GLOBAL=/dev/null` and their own `XDG_CONFIG_HOME` (`~/.config/git/ignore` applies
+  even without a global config).
+
 ## Network
 
 ### L-004 · Open port 8788 in ufw, or the tablet can't connect · 2026-10-18
