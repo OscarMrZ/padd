@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0e1424">
+  <title>PADD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;600&family=Barlow:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/js/ui/app.js"></script>
+</head>
+<body>
+  <div class="frame">
+    <div class="elbow" aria-hidden="true"></div>
+
+    <header class="bar">
+      <span class="mark">PADD</span>
+      <nav class="boards" aria-label="Boards"></nav>
+      <span class="status" role="status"></span>
+    </header>
+
+    <aside class="rail" aria-label="Tools">
+      <div class="group" role="radiogroup" aria-label="Tool">
+        <button class="tool" data-tool="pen" aria-label="Pen" aria-pressed="true">
+          <svg viewBox="0 0 24 24"><path d="M4 20l1.5-5L16 4.5a2.1 2.1 0 0 1 3 3L8.5 18z"/><path d="M14 6.5l3 3"/></svg>
+        </button>
+        <button class="tool" data-tool="highlighter" aria-label="Highlighter" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M9 15l-3 3h4l1.5-1.5"/><path d="M9 15l7-10 3 3-10 7z"/><path d="M4 21h16"/></svg>
+        </button>
+        <button class="tool" data-tool="eraser" aria-label="Eraser" aria-pressed="false">
+          <svg viewBox="0 0 24 24"><path d="M8 20h12"/><path d="M4.5 14.5l9-9a2 2 0 0 1 3 0l3 3a2 2 0 0 1 0 3L13 18H8z"/><path d="M9 10l6 6"/></svg>
+        </button>
+      </div>
+
+      <div class="group swatches" role="radiogroup" aria-label="Colour"></div>
+
+      <div class="group sizes" role="radiogroup" aria-label="Line width">
+        <button class="size" data-size="2" aria-label="Fine"><i style="--d:4px"></i></button>
+        <button class="size" data-size="4" aria-label="Medium"><i style="--d:8px"></i></button>
+        <button class="size" data-size="8" aria-label="Bold"><i style="--d:13px"></i></button>
+      </div>
+
+      <div class="group end">
+        <button class="act" data-act="undo" aria-label="Undo" title="Undo (Ctrl+Z)">
+          <svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg>
+        </button>
+        <button class="act" data-act="fit" aria-label="Fit to screen" title="Fit to screen">
+          <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <main class="stage">
+      <canvas class="ink"></canvas>
+      <canvas class="live"></canvas>
+      <p class="empty" hidden>No boards yet. Images Claude shows you will appear here.</p>
+    </main>
+  </div>
+  <div class="toast" role="alert" hidden></div>
+</body>
+</html>

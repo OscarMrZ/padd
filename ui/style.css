@@ -1,0 +1,282 @@
+/* PADD: calm dark console, Starfleet-inspired. One motif only: the elbow joining bar and rail. */
+
+:root {
+  --space: #0e1424;     /* page */
+  --deck: #161d33;      /* surfaces */
+  --hull: #34406a;      /* the elbow band */
+  --hull-hi: #45528a;
+  --text: #e6e4ef;
+  --dim: #8e94ad;
+  --amber: #f2a65a;     /* you: your ink and your actions */
+  --lilac: #b9a3f0;     /* Claude */
+  --ice: #7cc8ee;       /* live connection */
+  --rose: #e8707e;      /* problems */
+
+  --band: 76px;         /* rail width */
+  --bar: 52px;          /* bar height */
+  --elbow: 44px;        /* outer radius of the elbow */
+  --band-top: 12px;     /* thickness of the bar band */
+
+  --display: "Antonio", "Roboto Condensed", "Arial Narrow", sans-serif;
+  --body: "Barlow", system-ui, sans-serif;
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--space);
+  color: var(--text);
+  font: 16px/1.45 var(--body);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--ice);
+  outline-offset: 2px;
+}
+
+svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---- frame: elbow + bar + rail around the stage ---- */
+
+.frame {
+  display: grid;
+  grid-template-columns: var(--band) 1fr;
+  grid-template-rows: var(--bar) 1fr;
+  height: 100dvh;
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  gap: 0 10px;
+}
+
+.elbow {
+  grid-area: 1 / 1;
+  background: var(--hull);
+  border-top-left-radius: var(--elbow);
+  position: relative;
+}
+
+/* The elbow's inner curve, where the wide rail turns into the thin bar band. */
+.elbow::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 100%;
+  top: var(--band-top);
+  width: 18px;
+  height: 18px;
+  background: radial-gradient(circle at 100% 100%, transparent 18px, var(--hull) 18.5px);
+  pointer-events: none;
+}
+
+.bar {
+  grid-area: 1 / 2;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin-left: -10px;
+  padding: 0 6px 0 26px;
+  border-top: var(--band-top) solid var(--hull);
+  border-top-right-radius: 5px;
+}
+
+.mark {
+  font: 600 22px/1 var(--display);
+  letter-spacing: 0.08em;
+  color: var(--amber);
+}
+
+.boards {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.boards button {
+  flex: none;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font: 400 17px/1.2 var(--display);
+  color: var(--dim);
+  background: var(--deck);
+}
+
+.boards button[aria-current="true"] {
+  color: var(--space);
+  background: var(--text);
+}
+
+.status {
+  margin-left: auto;
+  font: 400 15px/1 var(--display);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.status::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--status, var(--dim));
+  vertical-align: 1px;
+}
+
+.status[data-state="live"] { --status: var(--ice); }
+.status[data-state="error"] { --status: var(--rose); }
+
+.rail {
+  grid-area: 2 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 26px 0 14px;
+  background: var(--hull);
+  border-bottom-left-radius: 22px;
+  border-bottom-right-radius: 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.group.end { margin-top: auto; }
+
+.tool, .act {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 44px;
+  border-radius: 22px;
+  color: var(--text);
+  transition: background-color 120ms;
+}
+
+.tool:hover, .act:hover { background: var(--hull-hi); }
+
+.tool[aria-pressed="true"] {
+  background: var(--amber);
+  color: var(--space);
+}
+
+.swatch {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: inset 0 0 0 2px rgb(0 0 0 / 0.25);
+}
+
+.swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 3px var(--hull), 0 0 0 5px var(--c);
+}
+
+.size {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 30px;
+  border-radius: 15px;
+}
+
+.size i {
+  width: var(--d);
+  height: var(--d);
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.size[aria-checked="true"] { background: var(--hull-hi); }
+
+/* ---- stage ---- */
+
+.stage {
+  grid-area: 2 / 2;
+  position: relative;
+  margin-top: 10px;
+  border-radius: 6px 6px 6px 6px;
+  background: var(--deck);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.stage[data-tool="eraser"] { cursor: cell; }
+.stage[data-tool="pen"], .stage[data-tool="highlighter"] { cursor: crosshair; }
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 24px;
+  color: var(--dim);
+  text-align: center;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: min(90vw, 36em);
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--rose);
+  color: var(--space);
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  :root { --band: 62px; --bar: 46px; --elbow: 32px; }
+  .tool, .act { width: 46px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

@@ -1,0 +1,61 @@
+# Decisions
+
+Design choices that are **settled**. Read this before re-opening one. If a choice here looks
+wrong, say so and propose a new entry instead of quietly working around it.
+
+## How to use
+
+- **Add an entry** when a choice is made that later work depends on and that would be expensive
+  to reverse. Small local choices don't belong here.
+- **Commit the entry with the change** it enables.
+- **Never rewrite history.** To change a decision, add a new entry and mark the old one
+  `Superseded by D-NNN`.
+- **Keep entries short.** Four lines, and the **Why** carries the most weight.
+
+```
+## D-NNN · Title · YYYY-MM-DD
+- **Decision:** what we do.
+- **Why:** the reason(s) that settled it.
+- **Rejected:** alternatives and the one-line reason against each.
+```
+
+## D-001 · Our own web app on the PC, served to the tablet's browser · 2026-10-18
+- **Decision:** PADD is a local web app reached from the tablet's browser over the LAN.
+- **Why:** works with any tablet; runs where the repos and Claude sessions are; no cloud in between.
+- **Rejected:** Samsung Notes sync (no API, no Linux client); a claude.ai artifact (the user wants
+  it local); existing tools like Trayce or FigJam (no project/subproject/session model).
+
+## D-002 · Claude Code channels carry Send into a session · 2026-10-18
+- **Decision:** each session runs the `padd` MCP server, which is a channel: Send becomes a
+  `notifications/claude/channel` event in that session. Claude talks back through MCP tools.
+- **Why:** wakes an idle interactive session the user can also watch and type into.
+- **Rejected:** `claude -p --resume` per Send (no live terminal, clashes with an open session);
+  hooks (only fire when the user prompts).
+
+## D-003 · Sessions run in tmux, shown in a Ghostty window · 2026-10-18
+- **Decision:** PADD starts `claude` in a detached tmux session (socket `-L padd`), answers the
+  dev-channel warning with `send-keys`, then opens Ghostty attached to it.
+- **Why:** the warning needs a keypress (L-001); tmux keeps the session alive when the window
+  closes; the user wanted Ghostty windows.
+- **Rejected:** Ghostty alone (nothing can answer the warning).
+
+## D-004 · TypeScript on Node, no framework · 2026-10-18
+- **Decision:** server, MCP server and UI in TypeScript; Node ≥ 26 runs it directly; the UI is
+  compiled by `tsc`; no framework or bundler.
+- **Why:** the channel API is documented for the TypeScript MCP SDK; one language and shared types
+  from server to tablet.
+- **Rejected:** Python (custom channel notifications undocumented in its SDK); Rust (heavy for a
+  web app plus MCP server).
+
+## D-005 · Config committed in the repo, data local · 2026-10-18
+- **Decision:** a repo gets `.padd/config.json` and a `padd` entry in `.mcp.json`, both committed;
+  boards, strokes, snapshots and session ids live in `.padd/data/` (gitignored).
+- **Why:** subprojects are part of the project; images and session ids are generated and machine-local.
+- **Rejected:** committing everything (binaries pile up in git).
+
+## D-006 · Every request carries a token · 2026-10-18
+- **Decision:** a random token in `~/.config/padd/token`; the tablet presents it once as `?token=`
+  and then as an HttpOnly cookie; scripts use `Authorization: Bearer`.
+- **Why:** PADD listens on the LAN, and Send puts text in front of a Claude session: an open port
+  would be a prompt-injection path.
+- **Rejected:** trusting the LAN; loopback-only plus a tunnel (the user wants direct LAN access).
