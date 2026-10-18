@@ -113,10 +113,10 @@ function renderPlace(): void {
 function renderStrip(): void {
   const strip = $<HTMLElement>(".strip");
   const empty = $<HTMLElement>(".empty");
-  strip.hidden = state.boards.length === 0;
+  strip.hidden = !state.sub;
   empty.hidden = state.boards.length > 0;
   if (state.sub && state.boards.length === 0) {
-    empty.textContent = `No images in ${state.sub.title} yet. They appear here as soon as Claude shows them.`;
+    empty.textContent = `No images in ${state.sub.title} yet. Add a photo below, or they appear here as soon as Claude shows them.`;
   }
   const i = state.boards.findIndex((b) => b.id === state.board?.id);
   $(".board-title").textContent = state.board?.title ?? "";
@@ -395,6 +395,47 @@ function setStatus(text: string, s: "claude" | "starting" | "idle" | "error"): v
   status.textContent = text;
   status.dataset.state = s;
 }
+
+// ---------- adding images from the tablet ----------
+
+const PHOTO_MAX = 3000; // px on the long side: plenty to draw on, light over Wi-Fi
+
+/**
+ * Re-encodes a picked image: upright (camera orientation applied) and at most PHOTO_MAX px.
+ * Photos become JPEG; PNG and WebP (screenshots, drawings) stay lossless as PNG.
+ */
+async function prepare(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const k = Math.min(1, PHOTO_MAX / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * k);
+  canvas.height = Math.round(bitmap.height * k);
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return file.type === "image/jpeg" ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
+}
+
+const addImage = $<HTMLLabelElement>(".add-image");
+addImage.querySelector("input")!.addEventListener("change", async (e) => {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files ?? [])];
+  input.value = "";
+  if (!state.project || !state.sub || files.length === 0) return;
+  addImage.setAttribute("aria-busy", "true");
+  let last: Board | undefined;
+  try {
+    for (const file of files) {
+      const title = file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Photo";
+      last = await api<Board>(`/api/p/${enc(state.project.id, state.sub.id)}/boards`, { image: await prepare(file), title });
+    }
+    // The board event adds it to the strip; open the (last) one just added.
+    if (last) await openBoard(last.id);
+  } catch (err) {
+    toast(`Image not added: ${(err as Error).message}`);
+  } finally {
+    addImage.removeAttribute("aria-busy");
+  }
+});
 
 // ---------- talking to Claude ----------
 

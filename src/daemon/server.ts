@@ -167,9 +167,18 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
   if (!boardId) {
     if (method === "GET") return send(res, 200, await store.boards());
     if (method === "POST") {
+      const b = (await body(req, MAX_SEND)) as { path?: unknown; title?: unknown; author?: unknown; image?: unknown };
+      // An image uploaded from the tablet: a photo or a picture from its gallery.
+      if (b.image !== undefined) {
+        const { bytes, ext } = decodeImage(b.image);
+        const title = typeof b.title === "string" && b.title.trim() ? b.title.trim().slice(0, 80) : "Photo";
+        const board = await store.addBoardBytes(bytes, ext, title, "me");
+        events.emit({ type: "board", ...place, board });
+        return send(res, 201, board);
+      }
       // Adding by path reads a file on this machine: only for local callers (CLI, Claude's MCP server).
       if (!isLoopback(req)) throw new Forbidden("boards can be added by path only from this computer");
-      const { path: image, title, author } = (await body(req)) as { path?: unknown; title?: unknown; author?: unknown };
+      const { path: image, title, author } = b;
       if (typeof image !== "string" || !isAbsolute(image)) throw new Invalid("path must be an absolute file path");
       const who: Author = author === "claude" ? "claude" : "me";
       const name = typeof title === "string" && title.trim() ? title.trim().slice(0, 80) : basename(image, extname(image));
@@ -341,6 +350,20 @@ async function agentRoute(ctx: Ctx, req: IncomingMessage, res: ServerResponse, u
   }
 
   send(res, 404, { error: `no route ${method} ${url.pathname}` });
+}
+
+/** Reads an image data URL, checking the bytes really are the image type it claims. */
+export function decodeImage(raw: unknown): { bytes: Buffer; ext: string } {
+  const m = typeof raw === "string" ? raw.match(/^data:image\/(png|jpeg|webp);base64,/) : null;
+  if (!m) throw new Invalid("image must be a PNG, JPEG or WebP data URL");
+  const bytes = Buffer.from((raw as string).slice(m[0].length), "base64");
+  const magic: Record<string, (b: Buffer) => boolean> = {
+    png: (b) => b.subarray(0, 8).toString("hex") === "89504e470d0a1a0a",
+    jpeg: (b) => b.subarray(0, 3).toString("hex") === "ffd8ff",
+    webp: (b) => b.subarray(0, 4).toString() === "RIFF" && b.subarray(8, 12).toString() === "WEBP",
+  };
+  if (!magic[m[1]!]!(bytes)) throw new Invalid(`that isn't a ${m[1]} image`);
+  return { bytes, ext: m[1] === "jpeg" ? ".jpg" : `.${m[1]}` };
 }
 
 async function hashOrThrow(path: string): Promise<string> {

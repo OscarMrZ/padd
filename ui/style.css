@@ -320,6 +320,19 @@ svg {
 .stage[data-tool="eraser"] { cursor: cell; }
 .stage[data-tool="pen"], .stage[data-tool="highlighter"] { cursor: crosshair; }
 
+.pen-debug {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgb(14 20 36 / 0.85);
+  color: var(--ice);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 .empty {
   position: absolute;
   inset: 0;
@@ -399,6 +412,26 @@ svg {
 .follow input:checked { background: var(--hull-hi); }
 .follow input:checked::after { transform: translateX(12px); background: var(--ice); }
 .follow input:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+
+.add-image {
+  flex: none;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  width: 78px;
+  height: 88px;
+  border: 2px dashed var(--hull-hi);
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.add-image:hover, .add-image:focus-within { color: var(--text); border-color: var(--amber); }
+.add-image[aria-busy="true"] { opacity: 0.5; pointer-events: none; }
 
 .thumbs {
   display: flex;
@@ -752,6 +785,7 @@ svg {
   .send { padding: 7px 12px; font-size: 15px; }
   .status { padding: 6px 8px; font-size: 14px; }
   .thumb { height: 70px; }
+  .add-image { height: 70px; width: 64px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

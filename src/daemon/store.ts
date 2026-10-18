@@ -8,7 +8,7 @@
 // Logs are replayed on read, so a crash loses at most the line being written.
 
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, copyFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { Author, Board, BoardInk, Message, Stroke } from "../shared/types.ts";
 
@@ -47,20 +47,28 @@ export class Store {
     return join(this.dir, "boards", id);
   }
 
+  /** A board from an image file on this machine. */
   async addBoard(imagePath: string, title: string, author: Author): Promise<Board> {
     const ext = extname(imagePath).toLowerCase();
     if (!IMAGE_TYPES[ext]) throw new Invalid(`unsupported image type ${ext || "(none)"}`);
-    let hash: string;
+    let bytes: Buffer;
     try {
-      hash = await hashFile(imagePath);
+      bytes = await readFile(imagePath);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Invalid(`no such file ${imagePath}`);
       throw e;
     }
-    const board: Board = { id: newId(), title, image: `image${ext}`, author, t: Date.now(), hash, source: imagePath };
+    return this.addBoardBytes(bytes, ext, title, author, imagePath);
+  }
+
+  /** A board from image bytes, e.g. a photo uploaded from the tablet. */
+  async addBoardBytes(bytes: Buffer, ext: string, title: string, author: Author, source?: string): Promise<Board> {
+    if (!IMAGE_TYPES[ext]) throw new Invalid(`unsupported image type ${ext || "(none)"}`);
+    const hash = createHash("sha1").update(bytes).digest("hex");
+    const board: Board = { id: newId(), title, image: `image${ext}`, author, t: Date.now(), hash, ...(source ? { source } : {}) };
     const dir = this.boardDir(board.id);
     await mkdir(dir, { recursive: true });
-    await copyFile(imagePath, join(dir, board.image));
+    await writeFile(join(dir, board.image), bytes);
     await writeFile(join(dir, "ink.jsonl"), "");
     await writeFile(join(dir, "board.json"), JSON.stringify(board, null, 2));
     return board;

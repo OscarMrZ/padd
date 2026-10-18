@@ -136,3 +136,23 @@ test("bad input and unknown places are rejected", async () => {
   assert.equal((await fetch(`${base}/api/p/tofu/nope/boards`, { headers: auth })).status, 404);
   assert.equal((await fetch(`${api}/zzzzzzzzzzzz`, { headers: auth })).status, 404);
 });
+
+test("the tablet uploads photos as boards, checked by their bytes", async () => {
+  const jpeg = Buffer.from("ffd8ffe000104a46494600010100000100010000ffd9", "hex");
+  let board: Board | undefined;
+  const [e] = await nextEvents(1, async () => {
+    const res = await post(api, { image: `data:image/jpeg;base64,${jpeg.toString("base64")}`, title: "Sketch idea" });
+    assert.equal(res.status, 201);
+    board = (await res.json()) as Board;
+  });
+  assert.equal(board!.title, "Sketch idea");
+  assert.equal(board!.author, "me");
+  assert.equal(board!.image, "image.jpg");
+  assert.deepEqual(e, { type: "board", project: "tofu", sub: "mood", board });
+  const img = await fetch(`${api}/${board!.id}/image`, { headers: auth });
+  assert.equal(img.headers.get("content-type"), "image/jpeg");
+  assert.deepEqual(Buffer.from(await img.arrayBuffer()), jpeg);
+  // A "JPEG" that is really something else, and a type we don't take:
+  assert.equal((await post(api, { image: `data:image/jpeg;base64,${Buffer.from("<svg/>").toString("base64")}` })).status, 400);
+  assert.equal((await post(api, { image: "data:image/svg+xml;base64,PHN2Zy8+" })).status, 400);
+});
