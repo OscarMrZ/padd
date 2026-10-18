@@ -11,6 +11,6 @@ Where PADD is and what comes next. Update it when a step lands.
    `padd claude <sub>` launches the session. Watched folders turn new renders into boards.
 4. **Sessions from the tablet.** New subproject spawns a session in Ghostty; resume offline ones.
 5. **Claude drives the review.** `show`, `ask_feedback`, `draw`, `note`, `reply`.
-6. **Service.** `padd serve` as a systemd user unit.
+6. ✅ **Service.** `padd service install`: a systemd user unit that starts with the desktop session.
 
 **Next step:** 4. Sessions from the tablet.

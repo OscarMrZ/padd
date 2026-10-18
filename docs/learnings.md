@@ -46,6 +46,12 @@ section for an area before working in it.
 - **Rule:** the flag goes first, then options, then the prompt (`src/cli.ts`, `claude`). Resume a
   linked session only if `~/.claude/projects/*/<id>.jsonl` exists.
 
+### L-006 · Log user services to a file on this machine · 2026-10-18
+- **What happened:** `journalctl --user -u padd` showed systemd's own lines but none of padd's
+  output (journals are volatile here; other user services show nothing either).
+- **Rule:** `StandardOutput=append:~/.local/state/padd/padd.log` (`src/service.ts`). Never print
+  the token there: `padd serve` prints tablet links only to a terminal.
+
 ## Network
 
 ### L-004 · Open port 8788 in ufw, or the tablet can't connect · 2026-10-18

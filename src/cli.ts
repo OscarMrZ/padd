@@ -12,13 +12,15 @@ import { findRepo, initRepo, installMcp, PADD_DIR, Registry } from "./daemon/reg
 import { createPaddServer } from "./daemon/server.ts";
 import { Watcher } from "./daemon/watch.ts";
 import { runMcp, sessionFromEnv } from "./mcp/server.ts";
+import { install, logPath, state, uninstall } from "./service.ts";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const CONFIG = process.env.XDG_CONFIG_HOME ? join(process.env.XDG_CONFIG_HOME, "padd") : join(homedir(), ".config", "padd");
 const PORT = "8788";
 
 const USAGE = `usage:
-  padd serve [--port ${PORT}] [--host 0.0.0.0]   run PADD (leave it running)
+  padd service install|uninstall|status       run PADD in the background (systemd user service)
+  padd serve [--port ${PORT}] [--host 0.0.0.0]   run PADD in this terminal instead
   padd link [--port ${PORT}]                     print the links to open on the tablet
 
   in a repo:
@@ -54,10 +56,28 @@ async function serve(argv: string[]): Promise<void> {
   const watcher = new Watcher(registry, events);
   const port = Number(values.port);
   server.listen(port, values.host, () => {
-    console.log("PADD online.");
-    printLinks(token, port);
+    console.log(`PADD online on ${values.host}:${port}.`);
+    // The links carry the token: show them in a terminal, never in a log file.
+    if (process.stdout.isTTY) printLinks(token, port);
+    else console.log("Tablet links: run padd link.");
     void watcher.sync();
   });
+}
+
+async function service(argv: string[]): Promise<void> {
+  const [action] = argv;
+  if (action === "install") {
+    const path = await install({ node: process.execPath, cli: join(ROOT, "src", "cli.ts"), root: ROOT, log: logPath() });
+    console.log(`PADD now runs in the background (${path}): ${await state()}.`);
+    console.log(`It starts with your desktop session. Log: ${logPath()}`);
+  } else if (action === "uninstall") {
+    await uninstall();
+    console.log("PADD no longer runs in the background.");
+  } else if (action === "status" || action === undefined) {
+    console.log(`padd.service: ${await state()}. Log: ${logPath()}`);
+  } else {
+    throw new Error("usage: padd service install|uninstall|status");
+  }
 }
 
 async function mcp(): Promise<void> {
@@ -200,6 +220,7 @@ function lanAddresses(): string[] {
 
 const commands: Record<string, (argv: string[]) => Promise<void>> = {
   init,
+  service,
   serve,
   link,
   board,

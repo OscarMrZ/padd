@@ -72,3 +72,11 @@ wrong, say so and propose a new entry instead of quietly working around it.
 - **Decision:** `.mcp.json` runs `padd mcp`; `npm link` in this repo puts `padd` on the PATH.
 - **Why:** the committed `.mcp.json` stays free of machine paths.
 - **Rejected:** an absolute path to `src/cli.ts` (breaks on any other machine or checkout).
+
+## D-009 · PADD runs as a systemd user service in the desktop session · 2026-10-18
+- **Decision:** `padd service install` writes `padd.service`, wanted by `graphical-session.target`,
+  restarting on failure, logging to `~/.local/state/padd/padd.log`.
+- **Why:** no terminal to keep open; the desktop session's environment (`WAYLAND_DISPLAY`, PATH
+  with mise shims) is what padd needs to open Ghostty windows for sessions.
+- **Rejected:** `default.target` (may start before the compositor exports Wayland); lingering at
+  boot (nothing to review before logging in).

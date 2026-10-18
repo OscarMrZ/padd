@@ -13,11 +13,15 @@ Needs Node ≥ 26.
 
 ```sh
 npm install && npm run build && npm link   # dependencies, tablet UI, `padd` on your PATH
-padd serve                                 # run PADD on :8788 (leave it running)
+padd service install                       # run PADD in the background on :8788, from login on
 padd link                                  # the tablet links (they carry the access token)
 npm test && npm run check                  # tests, types
 ```
 
+After changing PADD: `npm run build && systemctl --user restart padd`. Log:
+`~/.local/state/padd/padd.log`. `padd serve` runs it in a terminal instead (stop the service first).
+
+```sh
 In a repo:
 
 ```sh
