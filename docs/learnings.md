@@ -8,7 +8,7 @@ section for an area before working in it.
 - **Add an entry** once the fix is known, in the same commit as the fix or right after it.
 - **Lead with the rule.** The heading is the imperative to follow; the story explains why.
 - **Be concrete.** Commands, versions, the file where the fix lives.
-- **Group by area:** Sessions, Network, UI.
+- **Group by area:** UI, Sessions, Network.
 - **Keep it true.** Fix or delete an entry that stops applying. Settled *choices* belong in
   [`decisions.md`](decisions.md).
 
@@ -17,6 +17,15 @@ section for an area before working in it.
 - **What happened:** the symptom and what we wrongly assumed.
 - **Rule:** what to do instead, and where the fix lives.
 ```
+
+## UI
+
+### L-008 · Watch pen buttons in pointermove, not only pointerdown · 2026-10-18
+- **What happened:** the S Pen side button didn't erase. In Chromium, a button pressed while the
+  pen is down or hovering arrives as a `pointermove` with new `buttons` (a chord), with no
+  `pointerdown`; some Android browsers report it as a mouse right-click instead.
+- **Rule:** `penButton()` and the chord check in `pointermove` (`ui/board.ts`). Open the tablet
+  with `?debug` to see what a new device reports.
 
 ## Sessions
 

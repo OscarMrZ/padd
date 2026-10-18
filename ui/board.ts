@@ -16,6 +16,7 @@ const HIGHLIGHT_SCALE = 4;
 const ERASER_RADIUS = 14; // screen px
 const PALM_GUARD_MS = 600; // ignore touches this long after the pen was near
 const SNAPSHOT_MAX = 2400; // px on the long side of what Claude sees
+const PEN_AS_MOUSE_MS = 400; // a "mouse" event this soon after the pen is the pen
 
 export type Mode = Tool | "eraser";
 type Undo = { kind: "add"; id: string } | { kind: "erase"; strokes: Stroke[] };
@@ -153,9 +154,23 @@ export function createBoardView(stage: HTMLElement): BoardView {
     return e.pointerType === "pen" ? e.pressure : 0.5;
   }
 
-  /** The S Pen's side button, or a pen's eraser end, erases whatever tool is chosen. */
+  /**
+   * The S Pen's side button (or a pen's eraser end) erases whatever tool is chosen. Browsers
+   * report it differently: the barrel (2) or eraser (32) bit in `buttons`, `button` 2 or 5, or,
+   * on some Android browsers, a mouse right-click right after the pen was near.
+   */
+  function penButton(e: PointerEvent): boolean {
+    const pen = e.pointerType === "pen" || (e.pointerType === "mouse" && performance.now() - state.penSeen < PEN_AS_MOUSE_MS);
+    return pen && ((e.buttons & (2 | 32)) !== 0 || e.button === 2 || e.button === 5);
+  }
+
+  /** The pen is on the glass, not hovering. */
+  function touching(e: PointerEvent): boolean {
+    return (e.buttons & 1) !== 0 || e.pressure > 0;
+  }
+
   function wantsEraser(e: PointerEvent): boolean {
-    return state.mode === "eraser" || (e.pointerType === "pen" && (e.buttons & (2 | 32)) !== 0);
+    return state.mode === "eraser" || penButton(e);
   }
 
   stage.addEventListener("pointerdown", (e) => {
@@ -164,7 +179,8 @@ export function createBoardView(stage: HTMLElement): BoardView {
       state.penSeen = performance.now();
       cancelGesture(); // a palm that landed first must not keep panning
     }
-    if (e.pointerType === "mouse" && e.button !== 0) {
+    debug(e);
+    if (e.pointerType === "mouse" && e.button !== 0 && !penButton(e)) {
       mousePan = { id: e.pointerId, x: e.clientX, y: e.clientY };
       stage.setPointerCapture(e.pointerId);
       return;
@@ -196,6 +212,7 @@ export function createBoardView(stage: HTMLElement): BoardView {
 
   stage.addEventListener("pointermove", (e) => {
     if (e.pointerType === "pen") state.penSeen = performance.now();
+    if (e.buttons !== 0) debug(e);
     if (e.pointerType === "touch") return touchMove(e);
     if (mousePan?.id === e.pointerId) {
       state.autoFit = false;
@@ -203,7 +220,21 @@ export function createBoardView(stage: HTMLElement): BoardView {
       mousePan = { ...mousePan, x: e.clientX, y: e.clientY };
       return redraw();
     }
+    // A pen that moves without touching has lifted, even if its pointerup went missing.
+    if (e.pointerType === "pen" && !touching(e)) {
+      if (erasing?.id === e.pointerId) return void finishErase();
+      if (drawing?.id === e.pointerId) return void finishStroke();
+      return;
+    }
     if (erasing?.id === e.pointerId) return eraseAt(e);
+    // The side button pressed while the pen touches arrives as a move (a button chord), with or
+    // without a pointerdown before it. Start erasing there, dropping any line in progress.
+    if (penButton(e) && touching(e) && state.image && (!drawing || drawing.id === e.pointerId)) {
+      if (drawing) dropStroke();
+      stage.setPointerCapture(e.pointerId);
+      erasing = { id: e.pointerId, erased: [] };
+      return eraseAt(e);
+    }
     if (drawing?.id !== e.pointerId) return;
     const pts = drawing.stroke.points;
     const minStep = 0.75 / state.view.scale;
@@ -220,6 +251,7 @@ export function createBoardView(stage: HTMLElement): BoardView {
   for (const type of ["pointerup", "pointercancel"] as const) {
     stage.addEventListener(type, (e) => {
       if (e.pointerType === "touch") return touchUp(e);
+      debug(e);
       if (mousePan?.id === e.pointerId) mousePan = null;
       if (erasing?.id === e.pointerId) return void finishErase();
       if (drawing?.id === e.pointerId) return type === "pointerup" ? void finishStroke() : dropStroke();
@@ -368,6 +400,20 @@ export function createBoardView(stage: HTMLElement): BoardView {
     const [a, b] = [...touches.values()];
     if (!b) return { dist: 0, mid: { ...a! } };
     return { dist: Math.hypot(b.x - a!.x, b.y - a!.y), mid: { x: (a!.x + b.x) / 2, y: (a!.y + b.y) / 2 } };
+  }
+
+  // ?debug in the address shows what the pen reports, to tune penButton on a new device.
+  const debugLog = new URLSearchParams(location.search).has("debug") ? document.createElement("pre") : null;
+  if (debugLog) {
+    debugLog.className = "pen-debug";
+    stage.append(debugLog);
+  }
+  const debugLines: string[] = [];
+  function debug(e: PointerEvent): void {
+    if (!debugLog) return;
+    debugLines.unshift(`${e.type.replace("pointer", "")} ${e.pointerType} button=${e.button} buttons=${e.buttons} p=${e.pressure.toFixed(2)}`);
+    debugLines.length = Math.min(debugLines.length, 8);
+    debugLog.textContent = debugLines.join("\n");
   }
 
   new ResizeObserver(resize).observe(stage);
