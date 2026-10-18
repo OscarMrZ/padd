@@ -179,7 +179,6 @@ export function createBoardView(stage: HTMLElement): BoardView {
       state.penSeen = performance.now();
       cancelGesture(); // a palm that landed first must not keep panning
     }
-    debug(e);
     if (e.pointerType === "mouse" && e.button !== 0 && !penButton(e)) {
       mousePan = { id: e.pointerId, x: e.clientX, y: e.clientY };
       stage.setPointerCapture(e.pointerId);
@@ -212,7 +211,6 @@ export function createBoardView(stage: HTMLElement): BoardView {
 
   stage.addEventListener("pointermove", (e) => {
     if (e.pointerType === "pen") state.penSeen = performance.now();
-    if (e.buttons !== 0) debug(e);
     if (e.pointerType === "touch") return touchMove(e);
     if (mousePan?.id === e.pointerId) {
       state.autoFit = false;
@@ -251,7 +249,6 @@ export function createBoardView(stage: HTMLElement): BoardView {
   for (const type of ["pointerup", "pointercancel"] as const) {
     stage.addEventListener(type, (e) => {
       if (e.pointerType === "touch") return touchUp(e);
-      debug(e);
       if (mousePan?.id === e.pointerId) mousePan = null;
       if (erasing?.id === e.pointerId) return void finishErase();
       if (drawing?.id === e.pointerId) return type === "pointerup" ? void finishStroke() : dropStroke();
@@ -400,20 +397,6 @@ export function createBoardView(stage: HTMLElement): BoardView {
     const [a, b] = [...touches.values()];
     if (!b) return { dist: 0, mid: { ...a! } };
     return { dist: Math.hypot(b.x - a!.x, b.y - a!.y), mid: { x: (a!.x + b.x) / 2, y: (a!.y + b.y) / 2 } };
-  }
-
-  // ?debug in the address shows what the pen reports, to tune penButton on a new device.
-  const debugLog = new URLSearchParams(location.search).has("debug") ? document.createElement("pre") : null;
-  if (debugLog) {
-    debugLog.className = "pen-debug";
-    stage.append(debugLog);
-  }
-  const debugLines: string[] = [];
-  function debug(e: PointerEvent): void {
-    if (!debugLog) return;
-    debugLines.unshift(`${e.type.replace("pointer", "")} ${e.pointerType} button=${e.button} buttons=${e.buttons} p=${e.pressure.toFixed(2)}`);
-    debugLines.length = Math.min(debugLines.length, 8);
-    debugLog.textContent = debugLines.join("\n");
   }
 
   new ResizeObserver(resize).observe(stage);

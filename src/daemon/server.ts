@@ -113,6 +113,14 @@ async function handle(ctx: Ctx, req: IncomingMessage, res: ServerResponse): Prom
   if (method === "GET" && path.startsWith("/js/")) return file(res, inside(opts.jsDir, path.slice(4)));
   if (method === "GET" && path === "/api/events") return events.attach(res);
   if (method === "GET" && path === "/api/projects") return send(res, 200, await summaries(ctx));
+  if (method === "POST" && path === "/api/debug") {
+    // The tablet's input readout (?debug), written to padd's log for diagnosing a device.
+    const { lines, agent } = (await body(req)) as { lines?: unknown; agent?: unknown };
+    if (!Array.isArray(lines)) throw new Invalid("lines must be a list");
+    console.log(`tablet input log (${String(agent).slice(0, 200)}):`);
+    for (const line of lines.slice(-400)) console.log(`  ${String(line).slice(0, 300)}`);
+    return send(res, 200, { logged: Math.min(lines.length, 400) });
+  }
   if (path.startsWith("/api/agent/")) return agentRoute(ctx, req, res, url);
 
   // /api/p/<project>/... : everything inside one project.

@@ -4,6 +4,7 @@
 import type { Board, BoardInk, Message, PaddEvent, ProjectSummary, SessionState, Subproject } from "../src/shared/types.ts";
 import { api, clientId, enc, remember, toast } from "./api.ts";
 import { COLORS, createBoardView, type Mode } from "./board.ts";
+import { startDebug } from "./debug.ts";
 
 const $ = <T extends Element>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -637,6 +638,7 @@ window.addEventListener("hashchange", () => {
 });
 
 async function start(): Promise<void> {
+  startDebug();
   setMode("pen");
   setColor(COLORS[0]!.value);
   setSize(4);

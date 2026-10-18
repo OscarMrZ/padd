@@ -320,18 +320,21 @@ svg {
 .stage[data-tool="eraser"] { cursor: cell; }
 .stage[data-tool="pen"], .stage[data-tool="highlighter"] { cursor: crosshair; }
 
-.pen-debug {
-  position: absolute;
-  left: 10px;
-  bottom: 10px;
-  margin: 0;
+.input-debug {
+  position: fixed;
+  z-index: 20;
+  left: calc(var(--band) + 30px);
+  bottom: 130px;
+  max-width: min(640px, 70vw);
   padding: 8px 10px;
   border-radius: 6px;
-  background: rgb(14 20 36 / 0.85);
+  background: rgb(14 20 36 / 0.9);
   color: var(--ice);
   font-size: 12px;
-  pointer-events: none;
 }
+
+.input-debug pre { margin: 0 0 8px; white-space: pre-wrap; pointer-events: none; }
+.input-debug button { padding: 4px 12px; border-radius: 999px; background: var(--ice); color: var(--space); }
 
 .empty {
   position: absolute;

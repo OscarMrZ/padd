@@ -25,7 +25,7 @@ section for an area before working in it.
   pen is down or hovering arrives as a `pointermove` with new `buttons` (a chord), with no
   `pointerdown`; some Android browsers report it as a mouse right-click instead.
 - **Rule:** `penButton()` and the chord check in `pointermove` (`ui/board.ts`). Open the tablet
-  with `?debug` to see what a new device reports.
+  with `?debug` to see every input event a device sends; "Send log" writes it to padd's journal.
 
 ## Sessions
 
